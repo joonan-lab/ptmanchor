@@ -1,0 +1,42 @@
+# Data and results (large files)
+data/
+results/
+references/
+
+# Manuscript and analysis (private, in Dropbox)
+manuscript/
+scripts/
+
+# Internal planning docs
+plans/
+
+# Claude Code workspace
+.claude/
+
+# Virtual environments
+.venv*/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Misc
+Rplots.pdf

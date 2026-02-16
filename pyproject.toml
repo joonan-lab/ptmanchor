@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ptmanchor"
+version = "0.2.0"
+description = "Protein-anchored correction for multi-PTM proteomics cohorts"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+  {name = "Joo-Young An"},
+]
+keywords = [
+  "proteomics",
+  "post-translational-modification",
+  "PTM",
+  "phosphoproteomics",
+  "protein-correction",
+  "bioinformatics",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+  "numpy>=1.23",
+  "pandas>=1.5",
+  "scipy>=1.10",
+  "statsmodels>=0.14",
+  "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-cov"]
+
+[project.scripts]
+ptmanchor = "ptmanchor.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jooyoung-an/ptmanchor"
+Repository = "https://github.com/jooyoung-an/ptmanchor"
+Issues = "https://github.com/jooyoung-an/ptmanchor/issues"
+
+[tool.setuptools]
+packages = ["ptmanchor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
