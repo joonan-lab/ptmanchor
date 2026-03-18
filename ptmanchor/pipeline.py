@@ -179,6 +179,7 @@ def run_modality(
 
     raw_mean_delta = nanmean_axis1(raw_t) - nanmean_axis1(raw_n_matrix)
     protein_mean_delta = nanmean_axis1(protein_t) - nanmean_axis1(protein_n)
+    # -- Tier 1: Subtraction (adjusted_delta = PTM_delta - protein_delta) --
     subtract_mean_delta = nanmean_axis1(corrected_t) - nanmean_axis1(corrected_n)
 
     tumor_bases = {c.rsplit("-", 1)[0] for c in tumor_cols}
@@ -205,10 +206,13 @@ def run_modality(
 
         raw_p_paired, raw_n_metric_paired = one_sided_ttest_1samp(raw_pair_delta, min_n=args.min_pairs)
         subtract_p_paired, subtract_n_metric_paired = one_sided_ttest_1samp(subtract_pair_delta, min_n=args.min_pairs)
+        # -- Tier 2: Paired linear model (PTM_delta ~ intercept + lambda * protein_delta) --
         lm_intercept_paired, lm_lambda_paired, lm_p_paired, lm_n_metric_paired = paired_lm_intercept_test(
             raw_pair_delta,
             protein_pair_delta,
             min_n=args.min_pairs,
+            use_eb=not getattr(args, "no_eb", False),
+            lambda_shrinkage=not getattr(args, "no_lambda_shrinkage", False),
         )
         paired_testable_raw_strict = int(np.sum(raw_n_metric_paired >= args.min_pairs))
 
@@ -247,6 +251,7 @@ def run_modality(
             raw_n_metric = np.minimum(raw_n_t, raw_n_n)
             subtract_n_metric = np.minimum(subtract_n_t, subtract_n_n)
 
+            # Tier 2 fallback: sample-level LM when paired mode is unavailable
             lm_intercept, lm_lambda, lm_p, lm_n_metric = sample_lm_condition_test(
                 ptm_values=ptm_values,
                 protein_values=protein_by_site,
@@ -255,6 +260,7 @@ def run_modality(
                 min_tumor=effective_min_tumor,
                 min_normal=effective_min_normal,
                 max_sites=0,
+                use_eb=not getattr(args, "no_eb", False),
             )
             analysis_mode = "forced_unpaired" if force_unpaired else "paired_fallback_unpaired"
             testable_label = f"tumor>={effective_min_tumor},normal>={effective_min_normal}"
@@ -285,6 +291,7 @@ def run_modality(
         raw_n_metric = np.minimum(raw_n_t, raw_n_n)
         subtract_n_metric = np.minimum(subtract_n_t, subtract_n_n)
 
+        # -- Tier 2: Sample-level LM for unpaired design --
         lm_intercept, lm_lambda, lm_p, lm_n_metric = sample_lm_condition_test(
             ptm_values=ptm_values,
             protein_values=protein_by_site,
@@ -293,6 +300,7 @@ def run_modality(
             min_tumor=effective_min_tumor,
             min_normal=effective_min_normal,
             max_sites=0,
+            use_eb=not getattr(args, "no_eb", False),
         )
         analysis_mode = "unpaired"
         testable_label = f"tumor>={effective_min_tumor},normal>={effective_min_normal}"
@@ -310,7 +318,7 @@ def run_modality(
     subtract_q = bh_qvalues(subtract_p)
     lm_q = bh_qvalues(lm_p)
 
-    raw_up = np.isfinite(raw_q) & (raw_q <= args.fdr_cutoff) & (raw_mean_delta >= 0.0)
+    raw_up = np.isfinite(raw_q) & (raw_q <= args.fdr_cutoff) & (raw_mean_delta >= args.min_corrected_delta)
     subtract_true = (
         np.isfinite(subtract_q)
         & (subtract_q <= args.fdr_cutoff)
@@ -415,6 +423,7 @@ def run_modality(
         design = sample_design_all.set_index("sample_id").reindex(samples).reset_index()
         cov_encoded = encode_covariates(design, covariates)
 
+    # -- Tier 3: Sample-level regression (PTM ~ is_tumor + protein + covariates) --
     if args.enable_sample_lm:
         if design is None:
             raise ValueError("sample_design_all is required for sample-level LM.")
@@ -426,6 +435,7 @@ def run_modality(
             min_tumor=effective_min_tumor,
             min_normal=effective_min_normal,
             max_sites=args.max_sites_sample_lm,
+            use_eb=not getattr(args, "no_eb", False),
         )
         lm_sample_q = bh_qvalues(lm_sample_p)
         lm_sample_true = (

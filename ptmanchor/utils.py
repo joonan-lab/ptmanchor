@@ -9,7 +9,10 @@ from scipy import stats
 from statsmodels.stats.multitest import fdrcorrection
 
 ACC_RE = re.compile(
-    r"([A-NR-Z][0-9][A-Z0-9]{3}[0-9](?:-[0-9]+)?|[OPQ][0-9][A-Z0-9]{3}[0-9](?:-[0-9]+)?|ENSP[0-9]+(?:\.[0-9]+)?)"
+    r"(A0A[A-Z0-9]{3}[A-Z0-9]{4}(?:-[0-9]+)?"
+    r"|[A-NR-Z][0-9][A-Z0-9]{3}[0-9](?:-[0-9]+)?"
+    r"|[OPQ][0-9][A-Z0-9]{3}[0-9](?:-[0-9]+)?"
+    r"|ENSP[0-9]+(?:\.[0-9]+)?)"
 )
 
 

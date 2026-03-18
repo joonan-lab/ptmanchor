@@ -138,4 +138,119 @@ def mock_args(tmp_path, synthetic_manifest_tsv, synthetic_protein_tsv):
         force_detection_fallback=False,
         min_detection_delta=0.10,
         min_dual_group_sites_detection=100,
+        no_eb=False,
+        no_lambda_shrinkage=False,
+    )
+
+
+@pytest.fixture()
+def unpaired_samples():
+    """30 tumor + 20 normal, all unpaired (different patient IDs)."""
+    tumor = [f"T{i:03d}-T" for i in range(1, 31)]
+    normal = [f"N{i:03d}-N" for i in range(1, 21)]
+    return tumor + normal
+
+
+@pytest.fixture()
+def synthetic_unpaired_ptm_tsv(tmp_path, rng, unpaired_samples):
+    """Create a PTM TSV with unpaired tumor-normal samples."""
+    samples = unpaired_samples
+    n_sites = 50
+    rows = []
+    for i in range(n_sites):
+        row = {
+            "ID": f"site_{i}",
+            "UniProtAccession": f"P{10000 + i}",
+            "Gene Symbol": f"GENE{i}",
+            "Description": f"Description {i}",
+        }
+        for s in samples:
+            if rng.random() < 0.1:
+                row[s] = np.nan
+            else:
+                row[s] = float(rng.normal(0, 1))
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    path = tmp_path / "ptm_unpaired.tsv"
+    df.to_csv(path, sep="\t", index=False)
+    return path, n_sites, samples
+
+
+@pytest.fixture()
+def synthetic_unpaired_protein_tsv(tmp_path, rng, unpaired_samples):
+    """Create a protein TSV matching unpaired samples."""
+    samples = unpaired_samples
+    n_proteins = 30
+    rows = []
+    for i in range(n_proteins):
+        row = {
+            "ID": f"prot_{i}",
+            "UniProtAccession": f"P{10000 + i}",
+            "Gene Symbol": f"GENE{i}",
+            "Description": f"Protein {i}",
+        }
+        for s in samples:
+            if rng.random() < 0.05:
+                row[s] = np.nan
+            else:
+                row[s] = float(rng.normal(0, 0.5))
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    path = tmp_path / "protein_unpaired.tsv"
+    df.to_csv(path, sep="\t", index=False)
+    return path, n_proteins, samples
+
+
+@pytest.fixture()
+def synthetic_unpaired_manifest_tsv(tmp_path, synthetic_unpaired_ptm_tsv):
+    """Manifest for unpaired data."""
+    ptm_path, _, _ = synthetic_unpaired_ptm_tsv
+    df = pd.DataFrame({
+        "modality": ["phospho"],
+        "ptm_file": [str(ptm_path)],
+        "enabled": ["true"],
+    })
+    path = tmp_path / "manifest_unpaired.tsv"
+    df.to_csv(path, sep="\t", index=False)
+    return path
+
+
+@pytest.fixture()
+def mock_args_unpaired(tmp_path, synthetic_unpaired_manifest_tsv, synthetic_unpaired_protein_tsv):
+    """Args for unpaired pipeline run."""
+    protein_path, _, _ = synthetic_unpaired_protein_tsv
+    out_dir = tmp_path / "output_unpaired"
+    out_dir.mkdir(exist_ok=True)
+
+    return argparse.Namespace(
+        manifest=str(synthetic_unpaired_manifest_tsv),
+        protein_file=str(protein_path),
+        output_dir=str(out_dir),
+        min_pairs=3,
+        min_tumor=3,
+        min_normal=3,
+        fdr_cutoff=0.05,
+        min_corrected_delta=0.2,
+        top_n=10,
+        sample_meta_file=None,
+        sample_meta_sheet=None,
+        sample_id_col="Sample.ID",
+        patient_id_col=None,
+        covariates="",
+        enable_sample_lm=False,
+        enable_sample_lmm=False,
+        max_sites_sample_lm=0,
+        max_sites_sample_lmm=0,
+        lmm_maxiter=50,
+        enable_paired_to_unpaired_fallback=False,
+        min_paired_testable_sites=1,
+        fallback_min_tumor=0,
+        fallback_min_normal=0,
+        force_unpaired_if_paired=False,
+        enable_detection_fallback=False,
+        force_detection_fallback=False,
+        min_detection_delta=0.10,
+        min_dual_group_sites_detection=100,
+        no_eb=False,
+        no_lambda_shrinkage=False,
     )

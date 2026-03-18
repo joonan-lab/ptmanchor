@@ -1,6 +1,6 @@
 """ptmanchor — protein-anchored correction for multi-PTM proteomics cohorts."""
 
-__version__ = "0.2.0"
+__version__ = "1.0.0"
 
 from .pipeline import run_manifest, run_modality
 from .modeling import (

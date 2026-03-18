@@ -4,23 +4,38 @@
 
 In quantitative PTM proteomics, changes in parent-protein abundance confound PTM-site measurements, generating false positives. `ptmanchor` regresses out the protein-level effect per site, separating true PTM-specific regulation from protein-driven artifacts.
 
+## Prerequisites
+
+- Python >= 3.10
+- OS: macOS, Linux, Windows
+- Dependencies: numpy, pandas, scipy, statsmodels, openpyxl (auto-installed)
+
 ## Installation
 
 ```bash
-pip install ptmanchor
+git clone https://github.com/joonan-lab/ptmanchor.git
+cd ptmanchor
+pip install -e .
 ```
 
-For development:
+To run tests, install with test dependencies:
 
 ```bash
-git clone https://github.com/jooyoung-an/ptmanchor.git
-cd ptmanchor
 pip install -e ".[test]"
 ```
 
 ## Quick Start
 
 ### CLI
+
+Prepare the following files:
+- **PTM files**: quantification tables for each modality (e.g., `phospho_ratio.tsv`, `acetyl_ratio.tsv`)
+- **Protein file** (`global_proteome.tsv`): global proteome quantification used as the protein-level reference
+- **Manifest TSV** (`modalities.tsv`): a simple index that lists which PTM files to process (see [Input Format](#input-format))
+
+ptmanchor reads the manifest to find PTM file paths, so you can run multiple modalities (phospho, acetyl, ubiquitin, etc.) in a single command — just add rows to the manifest.
+
+Then run:
 
 ```bash
 ptmanchor \
@@ -31,7 +46,11 @@ ptmanchor \
   --fdr-cutoff 0.05
 ```
 
+See [Input Format](#input-format) below for file specifications.
+
 ### Python API
+
+You can also call ptmanchor functions directly in Python scripts or Jupyter notebooks:
 
 ```python
 from ptmanchor import run_manifest, paired_lm_intercept_test
@@ -47,11 +66,11 @@ intercepts, lambdas, pvals, n_obs = paired_lm_intercept_test(
 
 ## Method Overview
 
-`ptmanchor` applies a 3-tier protein-anchored correction:
+`ptmanchor` provides 3 tiers of protein-anchored correction:
 
-1. **Subtraction**: `adjusted_delta = PTM_delta - protein_delta` (simple baseline removal)
-2. **Paired linear model**: `PTM_delta ~ intercept + lambda * protein_delta` (site-wise OLS on paired tumor-normal deltas; the intercept captures the PTM-specific effect)
-3. **Sample-level LM/LMM**: `PTM ~ is_tumor + protein + covariates [+ (1|patient)]` (sample-level regression with optional mixed effects)
+1. **Subtraction**: `adjusted_delta = PTM_delta - protein_delta` — simple baseline removal assuming fixed λ = 1
+2. **Paired linear model (default)**: `PTM_delta ~ intercept + lambda * protein_delta` — estimates a per-site protein contribution coefficient (λ) and isolates the PTM-specific intercept
+3. **Sample-level LM/LMM** (optional): `PTM ~ is_tumor + protein + covariates [+ (1|patient)]` — sample-level regression for unpaired designs or when covariates are needed
 
 Each site is classified as:
 - **True PTM increase**: significant after correction (FDR < cutoff, effect > threshold)
@@ -77,7 +96,7 @@ ptmanchor [OPTIONS]
 
 Required inputs:
   --manifest FILE          TSV with columns: modality, ptm_file, enabled
-  --protein-file FILE      Global proteome TSV (log2-ratio or abundance)
+  --protein-file FILE      Global proteome TSV (log2 recommended)
 
 Output:
   --output-dir DIR         Output directory (default: results/multimodal_ptm_correction)
@@ -128,25 +147,65 @@ Other:
 
 ### PTM / Protein TSV
 
-Tab-separated with:
-- Row identifier columns (ID, UniProt accession, gene symbol, description)
-- Sample columns named with `-T` (tumor) or `-N` (normal) suffixes, or `RE-` prefix
+ptmanchor does not perform any internal normalization or log transformation — values are used as-is in the regression model. PTM and protein matrices must share the **same scale and normalization**. The tool has been validated on TMT-based quantification data from CPTAC.
+
+**We recommend log2-transformed values** (e.g., log2 ratio or log2 intensity), since the default effect-size threshold (`--min-corrected-delta 0.2`) is calibrated on the log2 scale. If using a different scale, adjust this threshold accordingly.
+
+Tab-separated with row identifiers followed by sample columns. Tumor samples end with `-T`, normal samples end with `-N`:
+
+```
+ID              Accession  Gene   Patient1-T  Patient1-N  Patient2-T  Patient2-N
+AAAS_S495       Q9NRG9     AAAS   0.32        -0.15       0.78        0.11
+ABI1_S216       Q8IZP0     ABI1   1.05        0.42        0.63        -0.08
+```
+
+The protein TSV follows the same format. Both PTM and protein values must be on the same scale (log2 recommended).
 
 ## Output Format
 
-Per-modality output TSV includes:
-- Site identifiers and protein match info
-- Raw, subtraction-corrected, and LM-corrected statistics (delta, p-value, q-value)
-- Binary hit classifications (`is_raw_up`, `is_true_subtract`, `is_true_lm`, `protein_driven_*`)
-- Optional sample-level model results
+For each modality, ptmanchor creates a directory (e.g., `results/corrected/phosphoproteomics/`) containing:
+- `all_sites.tsv` — full results for every PTM site
+- `true_increase_lm.tsv` — sites classified as true PTM-specific increases
+- `true_increase_subtract.tsv` — sites passing subtraction-based correction
+
+Example rows from `all_sites.tsv`:
+
+```
+ID              Accession  Gene   lm_intercept  lm_lambda  lm_q_bh   is_true_lm  protein_driven_lm
+AAAS_S495       Q9NRG9     AAAS   0.08          0.91       0.82      False       False
+ABI1_S216       Q8IZP0     ABI1   0.65          0.34       0.001     True        False
+CDK1_T161       P06493     CDK1   0.92          0.12       1.2e-05   True        False
+MKI67_S1031     P46013     MKI67  0.03          1.08       0.91      False       True
+```
+
+Key output columns:
+- `lm_intercept`: PTM-specific effect (beta) after removing protein contribution
+- `lm_lambda`: estimated protein contribution coefficient per site
+- `lm_q_bh`: BH-adjusted p-value
+- `is_true_lm`: True if PTM-specific increase is significant
+- `protein_driven_lm`: True if signal was significant before correction but not after
 
 A `modality_summary.tsv` aggregates hit counts across all modalities.
+
+## Reproducing Manuscript Analyses
+
+The `analysis/` directory contains scripts to reproduce all analyses in the manuscript. See [`analysis/README.md`](analysis/README.md) for details.
 
 ## Testing
 
 ```bash
 pytest tests/ -v --cov=ptmanchor
 ```
+
+## Citation
+
+If you use ptmanchor in your research, please cite:
+
+> Jeong et al. (2026). ptmanchor: protein-anchored correction reveals PTM-specific kinase regulation across multi-cohort cancer proteomics. [Under review]
+
+## Contact
+
+Joon-Yong An — joonan30@korea.ac.kr
 
 ## License
 

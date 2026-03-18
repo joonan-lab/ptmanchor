@@ -1,25 +1,132 @@
+"""modeling: site-wise OLS with optional EB variance shrinkage and lambda shrinkage."""
 from __future__ import annotations
 
+import os
+import subprocess
 import warnings
 
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.optimize import brentq
+from scipy.special import digamma, polygamma
 
+# ---------------------------------------------------------------------------
+# R_HOME setup for rpy2
+# ---------------------------------------------------------------------------
+if "R_HOME" not in os.environ:
+    try:
+        _r_home = subprocess.check_output(["R", "RHOME"], text=True).strip()
+        os.environ["R_HOME"] = _r_home
+    except Exception:
+        pass
+
+# ---------------------------------------------------------------------------
+# Empirical Bayes variance shrinkage (limma squeezeVar)
+# ---------------------------------------------------------------------------
+_R_PKGS: dict = {}
+_R_AVAIL: bool | None = None
+
+
+def _check_rpy2() -> bool:
+    global _R_AVAIL, _R_PKGS
+    if _R_AVAIL is not None:
+        return _R_AVAIL
+    try:
+        import rpy2.robjects
+        from rpy2.robjects.packages import importr
+        _R_PKGS["limma"] = importr("limma")
+        _R_AVAIL = True
+    except Exception:
+        _R_AVAIL = False
+    return _R_AVAIL
+
+
+def _limma_squeeze_var(s2, df):
+    """Empirical Bayes variance shrinkage via limma::squeezeVar (rpy2) or Python fallback."""
+    s2 = np.asarray(s2, dtype=float)
+    df = np.asarray(df, dtype=float)
+    valid = np.isfinite(s2) & (s2 > 0) & np.isfinite(df) & (df > 0)
+    if valid.sum() < 3:
+        return s2.copy(), df.copy(), 0.0, float(np.nanmedian(s2))
+
+    if _check_rpy2():
+        try:
+            import rpy2.robjects as ro
+            sv, dv = s2[valid], df[valid]
+            result = _R_PKGS["limma"].squeezeVar(
+                ro.FloatVector(sv.tolist()),
+                ro.FloatVector(dv.tolist()),
+            )
+            var_post = np.array(result.rx2("var.post"), dtype=float)
+            df_prior = float(np.array(result.rx2("df.prior"))[0])
+            var_prior = float(np.array(result.rx2("var.prior"))[0])
+            squeezed_s2 = s2.copy()
+            squeezed_df = df.copy()
+            squeezed_s2[valid] = var_post
+            squeezed_df[valid] = dv + df_prior
+            return squeezed_s2, squeezed_df, df_prior, var_prior
+        except Exception:
+            pass
+
+    # Python fallback (moment-matching)
+    sv, dv = s2[valid], df[valid]
+    z = np.log(sv) - (digamma(dv / 2.0) - np.log(dv / 2.0))
+    s0_sq = float(np.exp(np.mean(z)))
+    obs_var = float(np.var(z, ddof=1))
+    chi2_var = float(np.mean(polygamma(1, dv / 2.0)))
+    excess = obs_var - chi2_var
+    if excess <= 0:
+        return s2.copy(), df.copy(), 0.0, s0_sq
+    try:
+        def _f(d0h):
+            return float(polygamma(1, d0h)) - excess
+        lo, hi = 1e-4, 1e5
+        if _f(lo) * _f(hi) >= 0:
+            d0 = float(min(2.0 / excess, 1e4))
+        else:
+            d0 = 2.0 * float(brentq(_f, lo, hi, xtol=1e-6))
+    except Exception:
+        d0 = 10.0
+    squeezed_s2 = s2.copy()
+    squeezed_df = df.copy()
+    squeezed_s2[valid] = (d0 * s0_sq + dv * sv) / (d0 + dv)
+    squeezed_df[valid] = dv + d0
+    return squeezed_s2, squeezed_df, d0, s0_sq
+
+
+# ---------------------------------------------------------------------------
+# paired_lm_intercept_test  (EB + lambda shrinkage)
+# ---------------------------------------------------------------------------
 
 def paired_lm_intercept_test(
     raw_delta: np.ndarray,
     protein_delta: np.ndarray,
     min_n: int,
+    use_eb: bool = True,
+    lambda_shrinkage: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Site-wise OLS on paired deltas: raw_delta ~ intercept + lambda * protein_delta."""
+    """Site-wise OLS on paired deltas with optional EB + lambda shrinkage.
+
+    Model: raw_delta_i = beta_i + lambda_i * protein_delta_i + epsilon_i
+
+    Pass 1: raw OLS per site -> intercept, lambda, sigma2, df
+    Pass 2 (optional): shrink lambda toward precision-weighted global mean
+    Pass 3 (optional): EB shrinkage of sigma2 via limma squeezeVar
+    Final: moderated t-test on intercept
+    """
     n_sites = raw_delta.shape[0]
+    tiny = 1e-12
+
+    # --- Pass 1: OLS per site ---
     intercepts = np.full(n_sites, np.nan, dtype=np.float32)
     lambdas = np.full(n_sites, np.nan, dtype=np.float32)
-    pvals = np.full(n_sites, np.nan, dtype=float)
+    sigma2_arr = np.full(n_sites, np.nan, dtype=float)
+    df_arr = np.full(n_sites, np.nan, dtype=float)
     n_obs = np.zeros(n_sites, dtype=int)
+    xm_arr = np.full(n_sites, np.nan, dtype=float)
+    sxx_arr = np.full(n_sites, np.nan, dtype=float)
 
-    tiny = 1e-12
     for i in range(n_sites):
         y = raw_delta[i, :]
         x = protein_delta[i, :]
@@ -33,25 +140,20 @@ def paired_lm_intercept_test(
         yv = y[valid].astype(float)
         xm = float(np.mean(xv))
         ym = float(np.mean(yv))
-
         dx = xv - xm
-        dy = yv - ym
         sxx = float(np.dot(dx, dx))
+        xm_arr[i] = xm
+        sxx_arr[i] = sxx
 
         if sxx <= tiny:
             intercepts[i] = np.float32(ym)
             lambdas[i] = np.float32(0.0)
-            if n < 2:
-                continue
-            sd = float(np.std(yv, ddof=1))
-            if sd <= tiny or not np.isfinite(sd):
-                pvals[i] = 0.0 if ym > 0 else 1.0
-            else:
-                t_stat = ym / (sd / np.sqrt(n))
-                pvals[i] = float(stats.t.sf(t_stat, df=n - 1))
+            if n >= 2:
+                sigma2_arr[i] = float(np.var(yv, ddof=1))
+                df_arr[i] = float(n - 1)
             continue
 
-        slope = float(np.dot(dx, dy) / sxx)
+        slope = float(np.dot(dx, yv - ym) / sxx)
         intercept = float(ym - slope * xm)
         residuals = yv - (intercept + slope * xv)
         df = n - 2
@@ -59,20 +161,130 @@ def paired_lm_intercept_test(
             continue
 
         rss = float(np.dot(residuals, residuals))
-        sigma2 = rss / df
-        var_intercept = sigma2 * (1.0 / n + (xm * xm) / sxx)
-        if var_intercept <= tiny or not np.isfinite(var_intercept):
-            pvals[i] = 0.0 if intercept > 0 else 1.0
-        else:
-            se = float(np.sqrt(var_intercept))
-            t_stat = intercept / se
-            pvals[i] = float(stats.t.sf(t_stat, df=df))
-
         intercepts[i] = np.float32(intercept)
         lambdas[i] = np.float32(slope)
+        sigma2_arr[i] = rss / df
+        df_arr[i] = float(df)
+
+    # --- Lambda shrinkage ---
+    if lambda_shrinkage:
+        valid_lam = (
+            np.isfinite(lambdas.astype(float))
+            & np.isfinite(sigma2_arr)
+            & (sxx_arr > tiny)
+        )
+        if valid_lam.sum() > 10:
+            # Global lambda: precision-weighted average
+            weights = np.where(
+                valid_lam & (sigma2_arr > tiny), sxx_arr / sigma2_arr, 0.0
+            )
+            lambda_global = float(
+                np.average(lambdas[valid_lam].astype(float), weights=weights[valid_lam])
+            )
+
+            # Per-site Var(lambda_hat) = sigma2 / Sxx
+            var_lambda = np.where(
+                valid_lam & (sxx_arr > tiny), sigma2_arr / sxx_arr, np.inf
+            )
+
+            # Prior variance of lambda across sites
+            lam_vals = lambdas[valid_lam].astype(float)
+            var_lam_finite = var_lambda[valid_lam]
+            obs_spread = float(np.var(lam_vals, ddof=1))
+            mean_sampling_var = float(
+                np.mean(var_lam_finite[np.isfinite(var_lam_finite)])
+            )
+            tau2 = max(obs_spread - mean_sampling_var, 0.01)
+
+            # Shrinkage weight: tau2 / (tau2 + Var(lambda_hat))
+            shrink_weight = np.where(
+                valid_lam & np.isfinite(var_lambda),
+                tau2 / (tau2 + var_lambda),
+                0.0,  # fully shrink to global when Var(lambda) is inf
+            )
+            lambdas_shrunk = np.where(
+                valid_lam,
+                shrink_weight * lambdas.astype(float)
+                + (1.0 - shrink_weight) * lambda_global,
+                lambdas.astype(float),
+            )
+
+            # Recompute intercepts and sigma2 with shrunk lambda
+            for i in range(n_sites):
+                if not valid_lam[i]:
+                    continue
+                y = raw_delta[i, :]
+                x = protein_delta[i, :]
+                valid = np.isfinite(y) & np.isfinite(x)
+                n = int(np.sum(valid))
+                if n < min_n:
+                    continue
+                xv = x[valid].astype(float)
+                yv = y[valid].astype(float)
+                lam_s = lambdas_shrunk[i]
+                intercept = float(np.mean(yv) - lam_s * np.mean(xv))
+                residuals = yv - (intercept + lam_s * xv)
+                df = n - 2
+                if df <= 0:
+                    continue
+                rss = float(np.dot(residuals, residuals))
+                intercepts[i] = np.float32(intercept)
+                lambdas[i] = np.float32(lam_s)
+                sigma2_arr[i] = rss / df
+
+    # --- EB variance shrinkage ---
+    if use_eb:
+        eb_valid = (
+            np.isfinite(sigma2_arr)
+            & (sigma2_arr > 0)
+            & np.isfinite(df_arr)
+            & (df_arr > 0)
+        )
+        if eb_valid.sum() >= 3:
+            sigma2_arr, df_arr, _, _ = _limma_squeeze_var(sigma2_arr, df_arr)
+
+    # --- Compute p-values (moderated t-test) ---
+    pvals = np.full(n_sites, np.nan, dtype=float)
+    for i in range(n_sites):
+        # df can be inf when EB prior df is inf (t -> normal)
+        if not (
+            np.isfinite(float(intercepts[i]))
+            and np.isfinite(sigma2_arr[i])
+            and (np.isfinite(df_arr[i]) or np.isinf(df_arr[i]))
+            and sigma2_arr[i] > 0
+            and df_arr[i] > 0
+            and n_obs[i] >= min_n
+        ):
+            continue
+
+        sxx = sxx_arr[i] if np.isfinite(sxx_arr[i]) else 0.0
+        xm = xm_arr[i] if np.isfinite(xm_arr[i]) else 0.0
+
+        if sxx <= tiny:
+            se = float(np.sqrt(sigma2_arr[i] / n_obs[i]))
+        else:
+            var_intercept = sigma2_arr[i] * (1.0 / n_obs[i] + (xm ** 2) / sxx)
+            if var_intercept <= tiny:
+                pvals[i] = 0.0 if float(intercepts[i]) > 0 else 1.0
+                continue
+            se = float(np.sqrt(var_intercept))
+
+        if se < tiny:
+            pvals[i] = 0.0 if float(intercepts[i]) > 0 else 1.0
+            continue
+
+        t_stat = float(intercepts[i]) / se
+        if np.isinf(df_arr[i]):
+            pvals[i] = float(stats.norm.sf(t_stat))
+        else:
+            pvals[i] = float(stats.t.sf(t_stat, df=df_arr[i]))
 
     return intercepts, lambdas, pvals, n_obs
 
+
+# ---------------------------------------------------------------------------
+# sample_lm_condition_test  (EB variance shrinkage)
+# ---------------------------------------------------------------------------
 
 def sample_lm_condition_test(
     ptm_values: np.ndarray,
@@ -82,8 +294,9 @@ def sample_lm_condition_test(
     min_tumor: int,
     min_normal: int,
     max_sites: int = 0,
+    use_eb: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Site-wise OLS: y ~ 1 + is_tumor + protein + covariates."""
+    """Site-wise OLS: y ~ 1 + is_tumor + protein + covariates, with optional EB."""
     n_sites, n_samples = ptm_values.shape
     if protein_values.shape != ptm_values.shape:
         raise ValueError("protein_values shape must match ptm_values shape")
@@ -100,6 +313,9 @@ def sample_lm_condition_test(
     beta_protein = np.full(n_sites, np.nan, dtype=np.float32)
     pvals = np.full(n_sites, np.nan, dtype=float)
     n_obs = np.zeros(n_sites, dtype=int)
+    sigma2_arr = np.full(n_sites, np.nan, dtype=float)
+    df_arr = np.full(n_sites, np.nan, dtype=float)
+    xtx_inv_11 = np.full(n_sites, np.nan, dtype=float)
 
     tiny = 1e-12
     for i in idx:
@@ -124,7 +340,9 @@ def sample_lm_condition_test(
         pv = p[valid].astype(float)
         cols = [np.ones_like(tv), tv, pv]
         if covariate_matrix.size > 0:
-            cols.extend([covariate_matrix[valid, j].astype(float) for j in range(covariate_matrix.shape[1])])
+            cols.extend(
+                [covariate_matrix[valid, j].astype(float) for j in range(covariate_matrix.shape[1])]
+            )
         X = np.column_stack(cols)
         p_dim = X.shape[1]
         if n <= p_dim:
@@ -147,20 +365,52 @@ def sample_lm_condition_test(
             continue
         rss = float(np.dot(residual, residual))
         sigma2 = rss / df
-        var_cond = float(sigma2 * XtX_inv[1, 1])
-        if not np.isfinite(var_cond) or var_cond <= tiny:
-            p_one = 0.0 if beta[1] > 0 else 1.0
-        else:
-            se = float(np.sqrt(var_cond))
-            t_stat = float(beta[1] / se)
-            p_one = float(stats.t.sf(t_stat, df=df))
 
         beta_condition[i] = np.float32(beta[1])
         beta_protein[i] = np.float32(beta[2])
-        pvals[i] = p_one
+        sigma2_arr[i] = sigma2
+        df_arr[i] = float(df)
+        xtx_inv_11[i] = float(XtX_inv[1, 1])
+
+    # --- EB variance shrinkage ---
+    if use_eb:
+        eb_valid = (
+            np.isfinite(sigma2_arr)
+            & (sigma2_arr > 0)
+            & np.isfinite(df_arr)
+            & (df_arr > 0)
+        )
+        if eb_valid.sum() >= 3:
+            sigma2_arr, df_arr, _, _ = _limma_squeeze_var(sigma2_arr, df_arr)
+
+    # --- Compute p-values ---
+    for i in idx:
+        if not (
+            np.isfinite(float(beta_condition[i]))
+            and np.isfinite(sigma2_arr[i])
+            and (np.isfinite(df_arr[i]) or np.isinf(df_arr[i]))
+            and sigma2_arr[i] > 0
+            and df_arr[i] > 0
+            and np.isfinite(xtx_inv_11[i])
+        ):
+            continue
+        var_cond = float(sigma2_arr[i] * xtx_inv_11[i])
+        if not np.isfinite(var_cond) or var_cond <= tiny:
+            pvals[i] = 0.0 if float(beta_condition[i]) > 0 else 1.0
+        else:
+            se = float(np.sqrt(var_cond))
+            t_stat = float(beta_condition[i] / se)
+            if np.isinf(df_arr[i]):
+                pvals[i] = float(stats.norm.sf(t_stat))
+            else:
+                pvals[i] = float(stats.t.sf(t_stat, df=df_arr[i]))
 
     return beta_condition, beta_protein, pvals, n_obs
 
+
+# ---------------------------------------------------------------------------
+# sample_lmm_condition_test
+# ---------------------------------------------------------------------------
 
 def sample_lmm_condition_test(
     ptm_values: np.ndarray,
@@ -245,4 +495,3 @@ def sample_lmm_condition_test(
         fitted[i] = True
 
     return beta_condition, beta_protein, pvals, n_obs, fitted
-

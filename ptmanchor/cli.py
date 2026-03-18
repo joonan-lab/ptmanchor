@@ -18,18 +18,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--manifest",
-        default="data/internal_modalities.tsv",
+        required=True,
         help="TSV with columns: modality, ptm_file, enabled(optional).",
     )
     parser.add_argument(
         "--protein-file",
-        default="data/retro_global_HYU_20210714/retro_global_ratio.tsv",
+        required=True,
         help="Global proteome TSV file used as protein anchor.",
     )
     parser.add_argument(
         "--output-dir",
-        default="results/multimodal_ptm_correction",
+        required=True,
         help="Output directory.",
+    )
+    parser.add_argument(
+        "--no-eb",
+        action="store_true",
+        help="Disable empirical Bayes variance shrinkage.",
+    )
+    parser.add_argument(
+        "--no-lambda-shrinkage",
+        action="store_true",
+        help="Disable James-Stein lambda shrinkage.",
     )
     parser.add_argument("--min-pairs", type=int, default=8, help="Minimum paired observations per site.")
     parser.add_argument("--min-tumor", type=int, default=20, help="Minimum tumor observations for sample LM/LMM.")

@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ptmanchor"
-version = "0.2.0"
+version = "1.0.0"
 description = "Protein-anchored correction for multi-PTM proteomics cohorts"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-  {name = "Joo-Young An"},
+  {name = "Joon-Yong An"},
 ]
 keywords = [
   "proteomics",
@@ -40,14 +40,15 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-cov"]
+r = ["rpy2>=3.5"]
 
 [project.scripts]
 ptmanchor = "ptmanchor.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/jooyoung-an/ptmanchor"
-Repository = "https://github.com/jooyoung-an/ptmanchor"
-Issues = "https://github.com/jooyoung-an/ptmanchor/issues"
+Homepage = "https://github.com/joonan-lab/ptmanchor"
+Repository = "https://github.com/joonan-lab/ptmanchor"
+Issues = "https://github.com/joonan-lab/ptmanchor/issues"
 
 [tool.setuptools]
 packages = ["ptmanchor"]

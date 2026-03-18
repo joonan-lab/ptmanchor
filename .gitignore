@@ -3,7 +3,11 @@ data/
 results/
 references/
 
-# Manuscript and analysis (private, in Dropbox)
+# Analysis data and results (reproducible via scripts)
+analysis/data/
+analysis/results/
+
+# Manuscript (private, in Dropbox)
 manuscript/
 scripts/
 
@@ -37,6 +41,9 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Coverage
+.coverage
 
 # Misc
 Rplots.pdf
