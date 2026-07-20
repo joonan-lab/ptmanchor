@@ -8,7 +8,12 @@ import pandas as pd
 from scipy.stats import fisher_exact
 
 from .metadata import build_sample_design, encode_covariates
-from .modeling import paired_lm_intercept_test, sample_lm_condition_test, sample_lmm_condition_test
+from .modeling import (
+    _check_rpy2,
+    paired_lm_intercept_test,
+    sample_lm_condition_test,
+    sample_lmm_condition_test,
+)
 from .utils import (
     bh_qvalues,
     canonical_accession,
@@ -821,6 +826,11 @@ def run_manifest(args) -> tuple[Path, Path, Path]:
         "protein_file": str(protein_file),
         "output_dir": str(output_dir),
         "alternative": str(getattr(args, "alternative", "greater")),
+        # The two EB backends do not agree exactly, so record which one ran.
+        "eb_backend": (
+            "disabled" if getattr(args, "no_eb", False)
+            else ("limma" if _check_rpy2() else "python")
+        ),
         "min_pairs": args.min_pairs,
         "min_tumor": args.min_tumor,
         "min_normal": args.min_normal,

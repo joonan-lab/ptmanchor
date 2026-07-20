@@ -24,6 +24,22 @@ To run tests, install with test dependencies:
 pip install -e ".[test]"
 ```
 
+### Optional: R backend for variance shrinkage
+
+Empirical Bayes variance shrinkage calls `limma::squeezeVar` through rpy2 when R is
+available, and otherwise falls back to an equivalent moment-matching implementation in
+Python. Both paths run without further configuration, but they do not agree exactly: the
+Python fallback is slightly more conservative, so hit counts differ by a few percent.
+**The results reported in the manuscript were produced with the R backend**, so install it
+if you intend to reproduce them.
+
+```bash
+pip install -e ".[r]"
+R -e 'if (!requireNamespace("BiocManager", quietly=TRUE)) install.packages("BiocManager"); BiocManager::install("limma")'
+```
+
+Which path was used is recorded in `run_config.json` for every run.
+
 ## Quick Start
 
 ### CLI
@@ -222,6 +238,47 @@ description.
 
 The version of this repository as submitted for initial review is tagged
 [`v1.0.0`](https://github.com/joonan-lab/ptmanchor/releases/tag/v1.0.0).
+
+### Example: preparing CPTAC data
+
+ptmanchor takes any PTM and protein matrix in the format above; CPTAC is simply the source
+used in the manuscript. The `cptac` package returns samples as rows and sites as columns, so
+the tables need to be transposed and the identifier columns flattened. For one cohort:
+
+```python
+import cptac, pandas as pd
+
+ds = cptac.Ucec()
+
+def export(df, is_ptm):
+    df = df.T                                   # samples x sites -> sites x samples
+    meta = df.index.to_frame(index=False)       # MultiIndex: Name, Site, Peptide, Database_ID
+    out = df.reset_index(drop=True)
+    # normal samples carry a ".N" suffix; everything else is tumor
+    out.columns = [c[:-2] + "-N" if str(c).endswith(".N") else str(c) + "-T" for c in out.columns]
+    out.insert(0, "Gene Symbol", meta["Name"].values)
+    if is_ptm:
+        out.insert(0, "UniProtAccession", meta["Database_ID"].values)
+        out.insert(0, "ID", (meta["Name"].astype(str) + "_" + meta["Site"].astype(str)).values)
+    else:
+        out.insert(0, "ID", meta["Database_ID"].values)
+    return out
+
+export(ds.get_dataframe("phosphoproteomics", "umich"), True).to_csv("phospho.tsv", sep="\t", index=False)
+export(ds.get_dataframe("proteomics", "umich"), False).to_csv("proteome.tsv", sep="\t", index=False)
+pd.DataFrame({"modality": ["phosphoproteomics"], "ptm_file": ["phospho.tsv"],
+              "enabled": [True]}).to_csv("manifest.tsv", sep="\t", index=False)
+```
+
+```bash
+ptmanchor --manifest manifest.tsv --protein-file proteome.tsv \
+  --output-dir results/ucec --min-pairs 8 --fdr-cutoff 0.05
+```
+
+Keep every tumor and normal sample rather than pre-filtering to matched pairs: the paired
+model selects its own pairs, while the unpaired and detection fallbacks use the remaining
+samples. With the R backend installed this reproduces the manuscript's UCEC phosphoproteome
+counts exactly.
 
 ## Testing
 
