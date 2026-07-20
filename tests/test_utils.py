@@ -15,6 +15,8 @@ from ptmanchor.utils import (
     bh_qvalues,
     one_sided_ttest_1samp,
     one_sided_ttest_ind,
+    t_pvalue_from_stat,
+    classify_hit,
     get_paired_indices,
     nanmean_axis1,
 )
@@ -209,3 +211,109 @@ class TestNanmeanAxis1:
         result = nanmean_axis1(m)
         assert result[0] == pytest.approx(1.5)
         assert result[1] == pytest.approx(5.0)
+
+
+# --- direction-aware helpers ---
+
+
+class TestTPvalueFromStat:
+    def test_greater_and_less_are_complementary(self):
+        for t in (-2.5, -0.3, 0.0, 1.1, 3.7):
+            p_hi = t_pvalue_from_stat(t, df=20, alternative="greater")
+            p_lo = t_pvalue_from_stat(t, df=20, alternative="less")
+            assert p_hi + p_lo == pytest.approx(1.0)
+
+    def test_two_sided_doubles_the_smaller_tail(self):
+        for t in (-2.5, 1.1, 3.7):
+            p_two = t_pvalue_from_stat(t, df=20, alternative="two-sided")
+            p_hi = t_pvalue_from_stat(t, df=20, alternative="greater")
+            p_lo = t_pvalue_from_stat(t, df=20, alternative="less")
+            assert p_two == pytest.approx(2.0 * min(p_hi, p_lo))
+
+    def test_matches_scipy_t_distribution(self):
+        assert t_pvalue_from_stat(2.0, df=15, alternative="greater") == pytest.approx(
+            stats.t(df=15).sf(2.0)
+        )
+        assert t_pvalue_from_stat(2.0, df=15, alternative="less") == pytest.approx(
+            stats.t(df=15).cdf(2.0)
+        )
+
+    def test_infinite_df_falls_back_to_normal(self):
+        assert t_pvalue_from_stat(1.96, df=np.inf, alternative="greater") == pytest.approx(
+            stats.norm.sf(1.96)
+        )
+
+    def test_invalid_alternative_raises(self):
+        with pytest.raises(ValueError):
+            t_pvalue_from_stat(1.0, df=10, alternative="up")
+
+
+class TestClassifyHit:
+    """classify_hit: direction-aware significance masks."""
+
+    effect = np.array([0.5, -0.5, 0.05, -0.05, 1.0])
+    q = np.array([0.01, 0.01, 0.01, 0.01, 0.5])
+
+    def test_greater_populates_only_up(self):
+        res = classify_hit(self.effect, self.q, alpha=0.05, threshold=0.2)
+        assert res["up"].tolist() == [True, False, False, False, False]
+        assert not res["down"].any()
+        assert res["hit"].tolist() == res["up"].tolist()
+
+    def test_less_populates_only_down(self):
+        res = classify_hit(self.effect, self.q, alpha=0.05, threshold=0.2, alternative="less")
+        assert res["down"].tolist() == [False, True, False, False, False]
+        assert not res["up"].any()
+
+    def test_two_sided_populates_both_and_hit_is_union(self):
+        res = classify_hit(self.effect, self.q, alpha=0.05, threshold=0.2, alternative="two-sided")
+        assert res["up"].tolist() == [True, False, False, False, False]
+        assert res["down"].tolist() == [False, True, False, False, False]
+        assert res["hit"].tolist() == (res["up"] | res["down"]).tolist()
+
+    def test_threshold_is_inclusive(self):
+        """Manuscript classifies at |beta| >= 0.2, so the boundary itself is a hit."""
+        eff = np.array([0.2, -0.2])
+        q = np.array([0.01, 0.01])
+        res = classify_hit(eff, q, alpha=0.05, threshold=0.2, alternative="two-sided")
+        assert res["up"][0]
+        assert res["down"][1]
+
+    def test_nan_never_counts_as_a_hit(self):
+        eff = np.array([np.nan, 1.0])
+        q = np.array([0.01, np.nan])
+        res = classify_hit(eff, q, alpha=0.05, threshold=0.2, alternative="two-sided")
+        assert not res["hit"].any()
+
+    def test_invalid_alternative_raises(self):
+        with pytest.raises(ValueError):
+            classify_hit(self.effect, self.q, alpha=0.05, threshold=0.2, alternative="both")
+
+
+class TestTtestAlternative:
+    """The paired/unpaired t-tests must honour the requested direction."""
+
+    def test_paired_less_detects_downregulation(self, rng):
+        matrix = -1.5 + rng.normal(0, 0.3, (3, 30))
+        p_lo, _ = one_sided_ttest_1samp(matrix, min_n=5, alternative="less")
+        p_hi, _ = one_sided_ttest_1samp(matrix, min_n=5, alternative="greater")
+        assert (p_lo < 0.01).all()
+        assert (p_hi > 0.99).all()
+
+    def test_paired_two_sided_detects_either_direction(self, rng):
+        matrix = np.vstack([
+            1.5 + rng.normal(0, 0.3, (1, 30)),
+            -1.5 + rng.normal(0, 0.3, (1, 30)),
+        ])
+        p_two, _ = one_sided_ttest_1samp(matrix, min_n=5, alternative="two-sided")
+        assert (p_two < 0.01).all()
+
+    def test_unpaired_less_detects_downregulation(self, rng):
+        tumor = rng.normal(0, 0.3, (3, 20))
+        normal = 1.5 + rng.normal(0, 0.3, (3, 20))
+        p_lo, _, _ = one_sided_ttest_ind(tumor, normal, 5, 5, alternative="less")
+        assert (p_lo < 0.01).all()
+
+    def test_invalid_alternative_raises(self, rng):
+        with pytest.raises(ValueError):
+            one_sided_ttest_1samp(rng.normal(0, 1, (2, 10)), min_n=5, alternative="down")

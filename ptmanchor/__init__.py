@@ -1,6 +1,6 @@
 """ptmanchor — protein-anchored correction for multi-PTM proteomics cohorts."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from .pipeline import run_manifest, run_modality
 from .modeling import (
@@ -12,8 +12,10 @@ from .utils import (
     extract_accession,
     canonical_accession,
     bh_qvalues,
+    classify_hit,
     one_sided_ttest_1samp,
     one_sided_ttest_ind,
+    t_pvalue_from_stat,
     get_paired_indices,
     sample_columns,
 )
@@ -36,8 +38,10 @@ __all__ = [
     "extract_accession",
     "canonical_accession",
     "bh_qvalues",
+    "classify_hit",
     "one_sided_ttest_1samp",
     "one_sided_ttest_ind",
+    "t_pvalue_from_stat",
     "get_paired_indices",
     "sample_columns",
     # metadata

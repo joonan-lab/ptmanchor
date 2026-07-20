@@ -12,6 +12,7 @@ from .modeling import paired_lm_intercept_test, sample_lm_condition_test, sample
 from .utils import (
     bh_qvalues,
     canonical_accession,
+    classify_hit,
     extract_accession,
     nanmean_axis1,
     one_sided_ttest_ind,
@@ -23,7 +24,7 @@ from .utils import (
 
 
 def _primary_gene_symbol(value: object) -> str | None:
-    if value is None:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
         return None
     text = str(value).strip()
     if not text:
@@ -65,8 +66,14 @@ def build_protein_lookup(
         .groupby("protein_accession_canonical", sort=False)[samples]
         .median()
     )
+    # Gene symbol is only the last matching tier, so the column stays optional.
+    protein_gene_symbol = (
+        protein["Gene Symbol"].map(_primary_gene_symbol)
+        if "Gene Symbol" in protein.columns
+        else pd.Series([None] * len(protein))
+    )
     protein_gene = (
-        protein_numeric.assign(protein_gene_symbol=protein["Gene Symbol"].map(_primary_gene_symbol))
+        protein_numeric.assign(protein_gene_symbol=protein_gene_symbol)
         .dropna(subset=["protein_gene_symbol"])
         .groupby("protein_gene_symbol", sort=False)[samples]
         .median()
@@ -194,6 +201,9 @@ def run_modality(
     testable_label = f"n>={args.min_pairs}"
     paired_testable_raw_strict = 0
 
+    # Direction of the alternative hypothesis for every site-level test.
+    alternative = str(getattr(args, "alternative", "greater"))
+
     if paired_mode:
         pair_t_cols = [f"{b}-T" for b in pair_bases]
         pair_n_cols = [f"{b}-N" for b in pair_bases]
@@ -204,8 +214,12 @@ def run_modality(
         protein_pair_delta = protein_by_site[:, pair_t_idx] - protein_by_site[:, pair_n_idx]
         subtract_pair_delta = raw_pair_delta - protein_pair_delta
 
-        raw_p_paired, raw_n_metric_paired = one_sided_ttest_1samp(raw_pair_delta, min_n=args.min_pairs)
-        subtract_p_paired, subtract_n_metric_paired = one_sided_ttest_1samp(subtract_pair_delta, min_n=args.min_pairs)
+        raw_p_paired, raw_n_metric_paired = one_sided_ttest_1samp(
+            raw_pair_delta, min_n=args.min_pairs, alternative=alternative,
+        )
+        subtract_p_paired, subtract_n_metric_paired = one_sided_ttest_1samp(
+            subtract_pair_delta, min_n=args.min_pairs, alternative=alternative,
+        )
         # -- Tier 2: Paired linear model (PTM_delta ~ intercept + lambda * protein_delta) --
         lm_intercept_paired, lm_lambda_paired, lm_p_paired, lm_n_metric_paired = paired_lm_intercept_test(
             raw_pair_delta,
@@ -213,6 +227,7 @@ def run_modality(
             min_n=args.min_pairs,
             use_eb=not getattr(args, "no_eb", False),
             lambda_shrinkage=not getattr(args, "no_lambda_shrinkage", False),
+            alternative=alternative,
         )
         paired_testable_raw_strict = int(np.sum(raw_n_metric_paired >= args.min_pairs))
 
@@ -241,12 +256,14 @@ def run_modality(
                 raw_n_matrix,
                 min_tumor=effective_min_tumor,
                 min_normal=effective_min_normal,
+                alternative=alternative,
             )
             subtract_p, subtract_n_t, subtract_n_n = one_sided_ttest_ind(
                 corrected_t,
                 corrected_n,
                 min_tumor=effective_min_tumor,
                 min_normal=effective_min_normal,
+                alternative=alternative,
             )
             raw_n_metric = np.minimum(raw_n_t, raw_n_n)
             subtract_n_metric = np.minimum(subtract_n_t, subtract_n_n)
@@ -261,6 +278,7 @@ def run_modality(
                 min_normal=effective_min_normal,
                 max_sites=0,
                 use_eb=not getattr(args, "no_eb", False),
+                alternative=alternative,
             )
             analysis_mode = "forced_unpaired" if force_unpaired else "paired_fallback_unpaired"
             testable_label = f"tumor>={effective_min_tumor},normal>={effective_min_normal}"
@@ -281,12 +299,14 @@ def run_modality(
             raw_n_matrix,
             min_tumor=effective_min_tumor,
             min_normal=effective_min_normal,
+            alternative=alternative,
         )
         subtract_p, subtract_n_t, subtract_n_n = one_sided_ttest_ind(
             corrected_t,
             corrected_n,
             min_tumor=effective_min_tumor,
             min_normal=effective_min_normal,
+            alternative=alternative,
         )
         raw_n_metric = np.minimum(raw_n_t, raw_n_n)
         subtract_n_metric = np.minimum(subtract_n_t, subtract_n_n)
@@ -301,6 +321,7 @@ def run_modality(
             min_normal=effective_min_normal,
             max_sites=0,
             use_eb=not getattr(args, "no_eb", False),
+            alternative=alternative,
         )
         analysis_mode = "unpaired"
         testable_label = f"tumor>={effective_min_tumor},normal>={effective_min_normal}"
@@ -318,20 +339,37 @@ def run_modality(
     subtract_q = bh_qvalues(subtract_p)
     lm_q = bh_qvalues(lm_p)
 
-    raw_up = np.isfinite(raw_q) & (raw_q <= args.fdr_cutoff) & (raw_mean_delta >= args.min_corrected_delta)
-    subtract_true = (
-        np.isfinite(subtract_q)
-        & (subtract_q <= args.fdr_cutoff)
-        & (subtract_mean_delta >= args.min_corrected_delta)
+    # Direction-aware classification; "hit" is the union of up and down.
+    raw_cls = classify_hit(
+        raw_mean_delta, raw_q, alpha=args.fdr_cutoff,
+        threshold=args.min_corrected_delta, alternative=alternative,
     )
-    lm_true = (
-        np.isfinite(lm_q)
-        & (lm_q <= args.fdr_cutoff)
-        & (lm_intercept >= args.min_corrected_delta)
+    subtract_cls = classify_hit(
+        subtract_mean_delta, subtract_q, alpha=args.fdr_cutoff,
+        threshold=args.min_corrected_delta, alternative=alternative,
+    )
+    lm_cls = classify_hit(
+        lm_intercept, lm_q, alpha=args.fdr_cutoff,
+        threshold=args.min_corrected_delta, alternative=alternative,
     )
 
-    protein_driven_subtract = raw_up & (~subtract_true)
-    protein_driven_lm = raw_up & (~lm_true)
+    raw_up = raw_cls["up"]
+    raw_down = raw_cls["down"]
+    raw_hit = raw_cls["hit"]
+    subtract_up = subtract_cls["up"]
+    subtract_down = subtract_cls["down"]
+    subtract_hit = subtract_cls["hit"]
+    lm_up = lm_cls["up"]
+    lm_down = lm_cls["down"]
+    lm_hit = lm_cls["hit"]
+
+    # Aggregate "true" mask = hit in the tested direction(s).
+    subtract_true = subtract_hit
+    lm_true = lm_hit
+
+    # Protein-driven: significant in raw but no longer after correction.
+    protein_driven_subtract = raw_hit & (~subtract_hit)
+    protein_driven_lm = raw_hit & (~lm_hit)
 
     detection_rate_t = np.full(n_sites, np.nan, dtype=np.float32)
     detection_rate_n = np.full(n_sites, np.nan, dtype=np.float32)
@@ -370,23 +408,29 @@ def run_modality(
                 protein_detection_delta = protein_detection_rate_t - protein_detection_rate_n
                 detection_corrected_delta = detection_delta - protein_detection_delta
 
+                # Fisher exact direction mirrors the site-level alternative.
+                fisher_alt = "greater" if alternative == "greater" else (
+                    "less" if alternative == "less" else "two-sided"
+                )
                 for i in range(n_sites):
                     a = int(det_t[i])
                     c = int(det_n[i])
                     b = n_tumor_total - a
                     d = n_normal_total - c
                     try:
-                        _odds, pval = fisher_exact([[a, b], [c, d]], alternative="greater")
+                        _odds, pval = fisher_exact([[a, b], [c, d]], alternative=fisher_alt)
                     except Exception:
                         pval = np.nan
                     detection_p[i] = pval
 
                 detection_q = bh_qvalues(detection_p)
-                detection_true = (
-                    np.isfinite(detection_q)
-                    & (detection_q <= args.fdr_cutoff)
-                    & (detection_corrected_delta >= float(getattr(args, "min_detection_delta", 0.10)))
+                det_min_delta = float(getattr(args, "min_detection_delta", 0.10))
+                detection_cls = classify_hit(
+                    detection_corrected_delta, detection_q,
+                    alpha=args.fdr_cutoff, threshold=det_min_delta,
+                    alternative=alternative,
                 )
+                detection_true = detection_cls["hit"]
                 detection_fallback_used = True
                 if bool(getattr(args, "force_detection_fallback", False)):
                     detection_fallback_reason = "force_detection_fallback=true"
@@ -436,13 +480,14 @@ def run_modality(
             min_normal=effective_min_normal,
             max_sites=args.max_sites_sample_lm,
             use_eb=not getattr(args, "no_eb", False),
+            alternative=alternative,
         )
         lm_sample_q = bh_qvalues(lm_sample_p)
-        lm_sample_true = (
-            np.isfinite(lm_sample_q)
-            & (lm_sample_q <= args.fdr_cutoff)
-            & (lm_sample_beta >= args.min_corrected_delta)
+        lm_sample_cls = classify_hit(
+            lm_sample_beta, lm_sample_q, alpha=args.fdr_cutoff,
+            threshold=args.min_corrected_delta, alternative=alternative,
         )
+        lm_sample_true = lm_sample_cls["hit"]
 
     if args.enable_sample_lmm:
         if design is None:
@@ -464,13 +509,14 @@ def run_modality(
             min_normal=effective_min_normal,
             selected_indices=selected_idx,
             maxiter=args.lmm_maxiter,
+            alternative=alternative,
         )
         lmm_q = bh_qvalues(lmm_p)
-        lmm_true = (
-            np.isfinite(lmm_q)
-            & (lmm_q <= args.fdr_cutoff)
-            & (lmm_beta >= args.min_corrected_delta)
+        lmm_cls = classify_hit(
+            lmm_beta, lmm_q, alpha=args.fdr_cutoff,
+            threshold=args.min_corrected_delta, alternative=alternative,
         )
+        lmm_true = lmm_cls["hit"]
 
     both_true = subtract_true & lm_true
     subtract_only = subtract_true & (~lm_true)
@@ -505,8 +551,14 @@ def run_modality(
     results["detection_p_one_sided"] = detection_p
     results["detection_q_bh"] = detection_q
     results["is_raw_up"] = raw_up
+    results["is_raw_down"] = raw_down
+    results["is_raw_hit"] = raw_hit
     results["is_true_subtract"] = subtract_true
+    results["is_true_subtract_up"] = subtract_up
+    results["is_true_subtract_down"] = subtract_down
     results["is_true_lm"] = lm_true
+    results["is_true_lm_up"] = lm_up
+    results["is_true_lm_down"] = lm_down
     results["is_true_detection"] = detection_true
     results["protein_driven_subtract"] = protein_driven_subtract
     results["protein_driven_lm"] = protein_driven_lm
@@ -589,9 +641,16 @@ def run_modality(
         f"detection_fallback_reason: {detection_fallback_reason}",
         f"detection_tested_sites: {detection_tested_sites}",
         f"true_increase_detection: {int(np.sum(detection_true))}",
+        f"alternative: {alternative}",
         f"raw_up_sites: {int(np.sum(raw_up))}",
+        f"raw_down_sites: {int(np.sum(raw_down))}",
+        f"raw_hit_sites: {int(np.sum(raw_hit))}",
         f"true_increase_subtract: {int(np.sum(subtract_true))}",
+        f"true_subtract_up: {int(np.sum(subtract_up))}",
+        f"true_subtract_down: {int(np.sum(subtract_down))}",
         f"true_increase_lm: {int(np.sum(lm_true))}",
+        f"true_lm_up: {int(np.sum(lm_up))}",
+        f"true_lm_down: {int(np.sum(lm_down))}",
         f"true_increase_sample_lm: {int(np.sum(lm_sample_true))}",
         f"true_increase_sample_lmm: {int(np.sum(lmm_true))}",
         f"sample_lmm_fitted_sites: {int(np.sum(lmm_fitted))}",
@@ -636,9 +695,16 @@ def run_modality(
         "detection_fallback_reason": detection_fallback_reason,
         "detection_tested_sites": detection_tested_sites,
         "true_increase_detection": int(np.sum(detection_true)),
+        "alternative": alternative,
         "raw_up_sites": int(np.sum(raw_up)),
+        "raw_down_sites": int(np.sum(raw_down)),
+        "raw_hit_sites": int(np.sum(raw_hit)),
         "true_increase_subtract": int(np.sum(subtract_true)),
+        "true_subtract_up": int(np.sum(subtract_up)),
+        "true_subtract_down": int(np.sum(subtract_down)),
         "true_increase_lm": int(np.sum(lm_true)),
+        "true_lm_up": int(np.sum(lm_up)),
+        "true_lm_down": int(np.sum(lm_down)),
         "true_increase_sample_lm": int(np.sum(lm_sample_true)),
         "true_increase_sample_lmm": int(np.sum(lmm_true)),
         "sample_lmm_fitted_sites": int(np.sum(lmm_fitted)),
@@ -754,6 +820,7 @@ def run_manifest(args) -> tuple[Path, Path, Path]:
         "manifest": str(manifest_path),
         "protein_file": str(protein_file),
         "output_dir": str(output_dir),
+        "alternative": str(getattr(args, "alternative", "greater")),
         "min_pairs": args.min_pairs,
         "min_tumor": args.min_tumor,
         "min_normal": args.min_normal,

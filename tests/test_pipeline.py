@@ -477,3 +477,55 @@ class TestDetectionFallbackEdgeCases:
         df = pd.read_csv(summary_tsv, sep="\t")
         # Detection should NOT have been used (insufficient dual_group sites)
         assert df.iloc[0]["status"] == "ok"
+
+
+class TestBidirectionalPipeline:
+    """End-to-end behaviour of --alternative through run_manifest."""
+
+    @staticmethod
+    def _all_sites(args):
+        run_manifest(args)
+        files = list(Path(args.output_dir).glob("*/all_sites.tsv"))
+        assert files, "pipeline produced no per-modality output"
+        return pd.read_csv(files[0], sep="\t")
+
+    def test_default_run_reports_no_decreases(self, mock_args):
+        """Under the default one-sided test the down columns exist but stay empty."""
+        df = self._all_sites(mock_args)
+        for col in ("is_true_lm_up", "is_true_lm_down", "is_true_subtract_down", "is_raw_down"):
+            assert col in df.columns, f"Missing column: {col}"
+        assert not df["is_true_lm_down"].any()
+        assert (df["is_true_lm"] == df["is_true_lm_up"]).all()
+
+    def test_two_sided_run_can_report_decreases(self, mock_args):
+        """Two-sided mode is what produces the manuscript's PTM-specific decrease sites."""
+        args = copy.deepcopy(mock_args)
+        args.alternative = "two-sided"
+        args.output_dir = str(Path(mock_args.output_dir).parent / "two_sided")
+
+        df = self._all_sites(args)
+        assert (df["is_true_lm"] == (df["is_true_lm_up"] | df["is_true_lm_down"])).all()
+        assert not (df["is_true_lm_up"] & df["is_true_lm_down"]).any()
+
+    def test_alternative_recorded_in_summary(self, mock_args):
+        args = copy.deepcopy(mock_args)
+        args.alternative = "two-sided"
+        args.output_dir = str(Path(mock_args.output_dir).parent / "two_sided_summary")
+
+        summary_tsv, _, _ = run_manifest(args)
+        summary = pd.read_csv(summary_tsv, sep="\t")
+        assert summary.iloc[0]["alternative"] == "two-sided"
+        for col in ("true_lm_up", "true_lm_down", "raw_down_sites"):
+            assert col in summary.columns, f"Missing summary column: {col}"
+
+    def test_decrease_sites_pass_the_effect_threshold(self, mock_args):
+        """Every site flagged as a decrease must satisfy beta <= -min_corrected_delta."""
+        args = copy.deepcopy(mock_args)
+        args.alternative = "two-sided"
+        args.output_dir = str(Path(mock_args.output_dir).parent / "two_sided_threshold")
+
+        df = self._all_sites(args)
+        down = df[df["is_true_lm_down"]]
+        if len(down):
+            assert (down["lm_intercept_ptm_specific"] <= -args.min_corrected_delta).all()
+            assert (down["lm_q_bh"] <= args.fdr_cutoff).all()

@@ -73,9 +73,20 @@ intercepts, lambdas, pvals, n_obs = paired_lm_intercept_test(
 3. **Sample-level LM/LMM** (optional): `PTM ~ is_tumor + protein + covariates [+ (1|patient)]` — sample-level regression for unpaired designs or when covariates are needed
 
 Each site is classified as:
-- **True PTM increase**: significant after correction (FDR < cutoff, effect > threshold)
+- **True PTM change**: significant after correction (FDR < cutoff, |effect| > threshold)
 - **Protein-driven**: significant before but not after correction
 - **Null**: not significant in either analysis
+
+### Test Direction
+
+By default every site-level test is one-sided for upregulation (`H1: β₀ > 0`). Set
+`--alternative` to test the opposite direction (`less`) or both (`two-sided`), which
+also populates the corresponding down-regulated classifications:
+
+```bash
+ptmanchor --manifest data/modalities.tsv --protein-file data/global_proteome.tsv \
+  --alternative two-sided
+```
 
 ### Protein Matching
 
@@ -108,6 +119,9 @@ Thresholds:
   --fdr-cutoff FLOAT       FDR significance cutoff (default: 0.05)
   --min-corrected-delta F  Minimum adjusted effect size (default: 0.2)
   --top-n INT              Top N LM hits to save (default: 50)
+
+Test direction:
+  --alternative STR        greater (default) | less | two-sided
 
 Sample metadata:
   --sample-meta-file FILE  Sample metadata (csv/tsv/xlsx)
@@ -151,15 +165,25 @@ ptmanchor does not perform any internal normalization or log transformation — 
 
 **We recommend log2-transformed values** (e.g., log2 ratio or log2 intensity), since the default effect-size threshold (`--min-corrected-delta 0.2`) is calibrated on the log2 scale. If using a different scale, adjust this threshold accordingly.
 
-Tab-separated with row identifiers followed by sample columns. Tumor samples end with `-T`, normal samples end with `-N`:
+Tab-separated with metadata columns followed by sample columns. Tumor samples end with `-T`, normal samples end with `-N`.
+
+**PTM TSV** — `ID` and `UniProtAccession` are required; `Gene Symbol` and `Description` are optional:
 
 ```
-ID              Accession  Gene   Patient1-T  Patient1-N  Patient2-T  Patient2-N
-AAAS_S495       Q9NRG9     AAAS   0.32        -0.15       0.78        0.11
-ABI1_S216       Q8IZP0     ABI1   1.05        0.42        0.63        -0.08
+ID              UniProtAccession  Gene Symbol  Patient1-T  Patient1-N  Patient2-T  Patient2-N
+AAAS_S495       Q9NRG9            AAAS         0.32        -0.15       0.78        0.11
+ABI1_S216       Q8IZP0            ABI1         1.05        0.42        0.63        -0.08
 ```
 
-The protein TSV follows the same format. Both PTM and protein values must be on the same scale (log2 recommended).
+**Protein TSV** — the accession is read from `ID` itself, so only `ID` is required; `Gene Symbol` and `Description` are optional:
+
+```
+ID              Gene Symbol  Patient1-T  Patient1-N  Patient2-T  Patient2-N
+Q9NRG9          AAAS         0.11        -0.04       0.25        0.08
+Q8IZP0          ABI1         0.40        0.19        0.22        -0.02
+```
+
+Supplying `Gene Symbol` enables the third matching tier (see [Protein Matching](#protein-matching)); without it, sites are matched by accession only. Both PTM and protein values must be on the same scale (log2 recommended).
 
 ## Output Format
 
@@ -187,9 +211,17 @@ Key output columns:
 
 A `modality_summary.tsv` aggregates hit counts across all modalities.
 
-## Reproducing Manuscript Analyses
+## Manuscript
 
-The `analysis/` directory contains scripts to reproduce all analyses in the manuscript. See [`analysis/README.md`](analysis/README.md) for details.
+In the accompanying manuscript, ptmanchor was applied to paired tumor-normal CPTAC cohorts
+obtained through the [`cptac`](https://pypi.org/project/cptac/) Python package (v1.5.14); the
+same quantification tables are available from the
+[Proteomic Data Commons](https://pdc.cancer.gov/pdc/cptac-pancancer). Kinase-substrate
+annotations were taken from PhosphoSitePlus. See the manuscript for the full analysis
+description.
+
+The version of this repository as submitted for initial review is tagged
+[`v1.0.0`](https://github.com/joonan-lab/ptmanchor/releases/tag/v1.0.0).
 
 ## Testing
 

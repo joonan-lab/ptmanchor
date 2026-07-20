@@ -24,7 +24,8 @@ def extract_accession(value: object) -> str | None:
 
 
 def canonical_accession(accession: str | None) -> str | None:
-    if accession is None:
+    # Missing values arrive as None or as float NaN depending on the pandas version.
+    if not isinstance(accession, str):
         return None
     if accession.startswith("ENSP") and "." in accession:
         return accession.split(".")[0]
@@ -83,7 +84,23 @@ def bh_qvalues(pvals: np.ndarray) -> np.ndarray:
     return qvals
 
 
-def one_sided_ttest_1samp(matrix: np.ndarray, min_n: int) -> tuple[np.ndarray, np.ndarray]:
+_ALT_CHOICES = ("greater", "less", "two-sided")
+
+
+def _validate_alternative(alternative: str) -> str:
+    if alternative not in _ALT_CHOICES:
+        raise ValueError(
+            f"alternative must be one of {_ALT_CHOICES!r}, got {alternative!r}"
+        )
+    return alternative
+
+
+def one_sided_ttest_1samp(
+    matrix: np.ndarray,
+    min_n: int,
+    alternative: str = "greater",
+) -> tuple[np.ndarray, np.ndarray]:
+    _validate_alternative(alternative)
     n = np.sum(np.isfinite(matrix), axis=1).astype(int)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
@@ -92,7 +109,7 @@ def one_sided_ttest_1samp(matrix: np.ndarray, min_n: int) -> tuple[np.ndarray, n
             popmean=0.0,
             axis=1,
             nan_policy="omit",
-            alternative="greater",
+            alternative=alternative,
         )
     pvals = np.asarray(pvals, dtype=float)
     pvals[n < min_n] = np.nan
@@ -104,7 +121,9 @@ def one_sided_ttest_ind(
     normal_matrix: np.ndarray,
     min_tumor: int,
     min_normal: int,
+    alternative: str = "greater",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    _validate_alternative(alternative)
     n_t = np.sum(np.isfinite(tumor_matrix), axis=1).astype(int)
     n_n = np.sum(np.isfinite(normal_matrix), axis=1).astype(int)
     with warnings.catch_warnings():
@@ -115,11 +134,59 @@ def one_sided_ttest_ind(
             axis=1,
             nan_policy="omit",
             equal_var=False,
-            alternative="greater",
+            alternative=alternative,
         )
     pvals = np.asarray(pvals, dtype=float)
     pvals[(n_t < min_tumor) | (n_n < min_normal)] = np.nan
     return pvals, n_t, n_n
+
+
+def t_pvalue_from_stat(
+    t_stat: float,
+    df: float,
+    alternative: str = "greater",
+) -> float:
+    """Convert a t-statistic + df into a p-value under the chosen alternative."""
+    _validate_alternative(alternative)
+    if np.isinf(df):
+        dist = stats.norm
+    else:
+        dist = stats.t(df=df)
+    if alternative == "greater":
+        return float(dist.sf(t_stat))
+    if alternative == "less":
+        return float(dist.cdf(t_stat))
+    # two-sided
+    return float(2.0 * dist.sf(abs(t_stat)))
+
+
+def classify_hit(
+    effect: np.ndarray,
+    q: np.ndarray,
+    alpha: float,
+    threshold: float,
+    alternative: str = "greater",
+) -> dict[str, np.ndarray]:
+    """Classify sites into up / down / hit (union) masks by direction.
+
+    greater   -> only up populated (effect >= threshold & q <= alpha)
+    less      -> only down populated (effect <= -threshold & q <= alpha)
+    two-sided -> both populated
+    """
+    _validate_alternative(alternative)
+    effect = np.asarray(effect, dtype=float)
+    q = np.asarray(q, dtype=float)
+    finite = np.isfinite(q) & np.isfinite(effect)
+    sig = finite & (q <= alpha)
+
+    up = np.zeros(effect.shape, dtype=bool)
+    down = np.zeros(effect.shape, dtype=bool)
+    if alternative in ("greater", "two-sided"):
+        up = sig & (effect >= threshold)
+    if alternative in ("less", "two-sided"):
+        down = sig & (effect <= -threshold)
+    hit = up | down
+    return {"up": up, "down": down, "hit": hit}
 
 
 def get_paired_indices(samples: list[str]) -> tuple[np.ndarray, np.ndarray, list[str]]:

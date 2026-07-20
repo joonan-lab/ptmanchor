@@ -41,6 +41,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable James-Stein lambda shrinkage.",
     )
+    parser.add_argument(
+        "--alternative",
+        choices=["greater", "less", "two-sided"],
+        default="greater",
+        help=(
+            "Direction of the alternative hypothesis for the PTM-specific "
+            "intercept test. 'greater' (default): one-sided test for "
+            "upregulation (beta > 0). 'less': one-sided test for "
+            "downregulation (beta < 0). 'two-sided': bidirectional "
+            "test (beta != 0)."
+        ),
+    )
     parser.add_argument("--min-pairs", type=int, default=8, help="Minimum paired observations per site.")
     parser.add_argument("--min-tumor", type=int, default=20, help="Minimum tumor observations for sample LM/LMM.")
     parser.add_argument("--min-normal", type=int, default=8, help="Minimum normal observations for sample LM/LMM.")
@@ -137,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "If continuous-value tests are not testable, run detection-rate fallback "
-            "using one-sided Fisher tests (tumor > normal)."
+            "using Fisher exact tests. Test direction follows --alternative."
         ),
     )
     parser.add_argument(

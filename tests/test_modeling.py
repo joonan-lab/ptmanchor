@@ -314,9 +314,12 @@ class TestSampleLmmConditionTest:
         )
         protein = rng.normal(0, 1, (n_sites, n_samples)).astype(np.float32)
         noise = rng.normal(0, 0.3, (n_sites, n_samples)).astype(np.float32)
-        ptm = (true_beta * is_tumor[np.newaxis, :] + 0.5 * protein + noise).astype(
-            np.float32
-        )
+        # Per-patient random intercept, shared by that patient's tumor and normal sample.
+        patient_effect = rng.normal(0, 0.8, (n_sites, n_samples // 2))
+        patient_effect = np.concatenate([patient_effect, patient_effect], axis=1)
+        ptm = (
+            true_beta * is_tumor[np.newaxis, :] + 0.5 * protein + patient_effect + noise
+        ).astype(np.float32)
 
         covariate_df = pd.DataFrame(index=range(n_samples))
 
@@ -382,10 +385,14 @@ class TestSampleLmmConditionTest:
         protein = rng.normal(0, 1, (n_sites, n_samples)).astype(np.float32)
         age = rng.normal(60, 10, n_samples)
         noise = rng.normal(0, 0.3, (n_sites, n_samples)).astype(np.float32)
+        # Per-patient random intercept, shared by that patient's tumor and normal sample.
+        patient_effect = rng.normal(0, 0.8, (n_sites, n_samples // 2))
+        patient_effect = np.concatenate([patient_effect, patient_effect], axis=1)
         ptm = (
             true_beta * is_tumor[np.newaxis, :]
             + 0.5 * protein
             + 0.01 * age[np.newaxis, :]
+            + patient_effect
             + noise
         ).astype(np.float32)
 
@@ -464,6 +471,7 @@ class TestLimmaSqueezeVar:
 
     def test_mock_rpy2_success_path(self, rng):
         """Simulate rpy2+limma available via mock, testing the R code path."""
+        pytest.importorskip("rpy2.robjects")  # the R branch is unreachable without it
         import ptmanchor.modeling as mod
         from unittest.mock import MagicMock
 
@@ -650,7 +658,12 @@ class TestEdgeCases:
         )
         protein = rng.normal(0, 1, (n_sites, n_samples)).astype(np.float32)
         noise = rng.normal(0, 0.3, (n_sites, n_samples)).astype(np.float32)
-        ptm = (true_beta * is_tumor[np.newaxis, :] + 0.5 * protein + noise).astype(np.float32)
+        # Per-patient random intercept, shared by that patient's tumor and normal sample.
+        patient_effect = rng.normal(0, 0.8, (n_sites, n_samples // 2))
+        patient_effect = np.concatenate([patient_effect, patient_effect], axis=1)
+        ptm = (
+            true_beta * is_tumor[np.newaxis, :] + 0.5 * protein + patient_effect + noise
+        ).astype(np.float32)
 
         # Add 20% missing values
         mask = rng.random((n_sites, n_samples)) < 0.2
@@ -727,3 +740,88 @@ class TestEdgeCases:
 
         # With only 2 obs: n-2=0, df<=0, should skip
         assert np.isnan(pvals[0])
+
+
+class TestBidirectionalInference:
+    """Direction of the intercept test (`alternative`)."""
+
+    def test_less_detects_negative_intercept(self, rng):
+        """A true PTM-specific decrease is significant under 'less', not under 'greater'."""
+        n_sites, n_pairs = 4, 40
+        protein_delta = rng.normal(0, 0.3, (n_sites, n_pairs)).astype(np.float32)
+        raw_delta = (-1.0 + rng.normal(0, 0.3, (n_sites, n_pairs))).astype(np.float32)
+
+        _, _, p_less, _ = paired_lm_intercept_test(
+            raw_delta, protein_delta, min_n=5, alternative="less"
+        )
+        _, _, p_greater, _ = paired_lm_intercept_test(
+            raw_delta, protein_delta, min_n=5, alternative="greater"
+        )
+
+        for i in range(n_sites):
+            assert p_less[i] < 0.01
+            assert p_greater[i] > 0.99
+
+    def test_two_sided_detects_both_directions(self, rng):
+        n_pairs = 40
+        protein_delta = rng.normal(0, 0.3, (2, n_pairs)).astype(np.float32)
+        raw_delta = np.vstack([
+            1.0 + rng.normal(0, 0.3, (1, n_pairs)),
+            -1.0 + rng.normal(0, 0.3, (1, n_pairs)),
+        ]).astype(np.float32)
+
+        intercepts, _, pvals, _ = paired_lm_intercept_test(
+            raw_delta, protein_delta, min_n=5, alternative="two-sided"
+        )
+
+        assert intercepts[0] > 0 and intercepts[1] < 0
+        assert (pvals < 0.01).all()
+
+    def test_two_sided_pvalue_is_double_the_one_sided_tail(self, rng):
+        """Same t-statistic, only the tail conversion differs."""
+        n_sites, n_pairs = 6, 30
+        protein_delta = rng.normal(0, 0.5, (n_sites, n_pairs)).astype(np.float32)
+        raw_delta = (0.8 + 0.5 * protein_delta + rng.normal(0, 0.4, (n_sites, n_pairs))).astype(np.float32)
+
+        intercepts, _, p_two, _ = paired_lm_intercept_test(
+            raw_delta, protein_delta, min_n=5, alternative="two-sided"
+        )
+        _, _, p_greater, _ = paired_lm_intercept_test(
+            raw_delta, protein_delta, min_n=5, alternative="greater"
+        )
+
+        for i in range(n_sites):
+            assert intercepts[i] > 0, "fixture should produce positive intercepts"
+            assert p_two[i] == pytest.approx(2.0 * p_greater[i])
+
+    def test_default_is_greater(self, rng):
+        """Omitting `alternative` must reproduce the one-sided upregulation test."""
+        protein_delta = rng.normal(0, 0.3, (3, 30)).astype(np.float32)
+        raw_delta = (0.9 + rng.normal(0, 0.3, (3, 30))).astype(np.float32)
+
+        _, _, p_default, _ = paired_lm_intercept_test(raw_delta, protein_delta, min_n=5)
+        _, _, p_greater, _ = paired_lm_intercept_test(
+            raw_delta, protein_delta, min_n=5, alternative="greater"
+        )
+        assert p_default == pytest.approx(p_greater, nan_ok=True)
+
+    def test_sample_lm_honours_direction(self, rng):
+        n_sites, n_samples = 3, 40
+        is_tumor = np.zeros(n_samples, dtype=bool)
+        is_tumor[: n_samples // 2] = True
+        protein = rng.normal(0, 0.3, (n_sites, n_samples))
+        ptm = rng.normal(0, 0.3, (n_sites, n_samples))
+        ptm[:, is_tumor] -= 1.5  # tumour lower than normal
+
+        _, _, p_less, _ = sample_lm_condition_test(
+            ptm, protein, is_tumor, np.empty((n_samples, 0)),
+            min_tumor=5, min_normal=5, alternative="less",
+        )
+        assert (p_less < 0.01).all()
+
+    def test_invalid_alternative_raises(self, rng):
+        with pytest.raises(ValueError):
+            paired_lm_intercept_test(
+                rng.normal(0, 1, (2, 10)), rng.normal(0, 1, (2, 10)),
+                min_n=5, alternative="negative",
+            )

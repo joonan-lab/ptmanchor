@@ -11,6 +11,8 @@ from scipy import stats
 from scipy.optimize import brentq
 from scipy.special import digamma, polygamma
 
+from .utils import _validate_alternative, t_pvalue_from_stat
+
 # ---------------------------------------------------------------------------
 # R_HOME setup for rpy2
 # ---------------------------------------------------------------------------
@@ -105,6 +107,7 @@ def paired_lm_intercept_test(
     min_n: int,
     use_eb: bool = True,
     lambda_shrinkage: bool = True,
+    alternative: str = "greater",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Site-wise OLS on paired deltas with optional EB + lambda shrinkage.
 
@@ -113,8 +116,9 @@ def paired_lm_intercept_test(
     Pass 1: raw OLS per site -> intercept, lambda, sigma2, df
     Pass 2 (optional): shrink lambda toward precision-weighted global mean
     Pass 3 (optional): EB shrinkage of sigma2 via limma squeezeVar
-    Final: moderated t-test on intercept
+    Final: moderated t-test on intercept, one- or two-sided per `alternative`
     """
+    _validate_alternative(alternative)
     n_sites = raw_delta.shape[0]
     tiny = 1e-12
 
@@ -265,21 +269,28 @@ def paired_lm_intercept_test(
         else:
             var_intercept = sigma2_arr[i] * (1.0 / n_obs[i] + (xm ** 2) / sxx)
             if var_intercept <= tiny:
-                pvals[i] = 0.0 if float(intercepts[i]) > 0 else 1.0
+                pvals[i] = _degenerate_pvalue(float(intercepts[i]), alternative)
                 continue
             se = float(np.sqrt(var_intercept))
 
         if se < tiny:
-            pvals[i] = 0.0 if float(intercepts[i]) > 0 else 1.0
+            pvals[i] = _degenerate_pvalue(float(intercepts[i]), alternative)
             continue
 
         t_stat = float(intercepts[i]) / se
-        if np.isinf(df_arr[i]):
-            pvals[i] = float(stats.norm.sf(t_stat))
-        else:
-            pvals[i] = float(stats.t.sf(t_stat, df=df_arr[i]))
+        pvals[i] = t_pvalue_from_stat(t_stat, df_arr[i], alternative=alternative)
 
     return intercepts, lambdas, pvals, n_obs
+
+
+def _degenerate_pvalue(effect: float, alternative: str) -> float:
+    """Limiting p-value when the standard error collapses to zero."""
+    if alternative == "greater":
+        return 0.0 if effect > 0 else 1.0
+    if alternative == "less":
+        return 0.0 if effect < 0 else 1.0
+    # two-sided
+    return 0.0 if effect != 0 else 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -295,8 +306,10 @@ def sample_lm_condition_test(
     min_normal: int,
     max_sites: int = 0,
     use_eb: bool = True,
+    alternative: str = "greater",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Site-wise OLS: y ~ 1 + is_tumor + protein + covariates, with optional EB."""
+    _validate_alternative(alternative)
     n_sites, n_samples = ptm_values.shape
     if protein_values.shape != ptm_values.shape:
         raise ValueError("protein_values shape must match ptm_values shape")
@@ -396,14 +409,11 @@ def sample_lm_condition_test(
             continue
         var_cond = float(sigma2_arr[i] * xtx_inv_11[i])
         if not np.isfinite(var_cond) or var_cond <= tiny:
-            pvals[i] = 0.0 if float(beta_condition[i]) > 0 else 1.0
+            pvals[i] = _degenerate_pvalue(float(beta_condition[i]), alternative)
         else:
             se = float(np.sqrt(var_cond))
             t_stat = float(beta_condition[i] / se)
-            if np.isinf(df_arr[i]):
-                pvals[i] = float(stats.norm.sf(t_stat))
-            else:
-                pvals[i] = float(stats.t.sf(t_stat, df=df_arr[i]))
+            pvals[i] = t_pvalue_from_stat(t_stat, df_arr[i], alternative=alternative)
 
     return beta_condition, beta_protein, pvals, n_obs
 
@@ -422,8 +432,10 @@ def sample_lmm_condition_test(
     min_normal: int,
     selected_indices: np.ndarray | None = None,
     maxiter: int = 100,
+    alternative: str = "greater",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Site-wise mixed model: y ~ is_tumor + protein + covariates + (1|patient_id)."""
+    _validate_alternative(alternative)
     import statsmodels.formula.api as smf
 
     n_sites, n_samples = ptm_values.shape
@@ -488,10 +500,15 @@ def sample_lmm_condition_test(
         if not np.isfinite(beta_c) or not np.isfinite(p_two):
             continue
 
-        p_one = float(p_two / 2.0) if beta_c >= 0 else float(1.0 - p_two / 2.0)
+        if alternative == "two-sided":
+            p_directed = float(p_two)
+        elif alternative == "greater":
+            p_directed = float(p_two / 2.0) if beta_c >= 0 else float(1.0 - p_two / 2.0)
+        else:  # "less"
+            p_directed = float(p_two / 2.0) if beta_c <= 0 else float(1.0 - p_two / 2.0)
         beta_condition[i] = np.float32(beta_c)
         beta_protein[i] = np.float32(beta_p) if np.isfinite(beta_p) else np.float32(np.nan)
-        pvals[i] = p_one
+        pvals[i] = p_directed
         fitted[i] = True
 
     return beta_condition, beta_protein, pvals, n_obs, fitted
