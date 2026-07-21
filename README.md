@@ -27,11 +27,10 @@ pip install -e ".[test]"
 ### Optional: R backend for variance shrinkage
 
 Empirical Bayes variance shrinkage calls `limma::squeezeVar` through rpy2 when R is
-available, and otherwise falls back to an equivalent moment-matching implementation in
-Python. Both paths run without further configuration, but they do not agree exactly: the
-Python fallback is slightly more conservative, so hit counts differ by a few percent.
-**The results reported in the manuscript were produced with the R backend**, so install it
-if you intend to reproduce them.
+available, and otherwise uses an equivalent implementation in Python. The two paths agree
+to numerical precision, so **no R installation is needed to reproduce the manuscript
+results**; the R path is provided only for users who prefer to run the reference
+implementation directly.
 
 ```bash
 pip install -e ".[r]"
@@ -277,8 +276,8 @@ ptmanchor --manifest manifest.tsv --protein-file proteome.tsv \
 
 Keep every tumor and normal sample rather than pre-filtering to matched pairs: the paired
 model selects its own pairs, while the unpaired and detection fallbacks use the remaining
-samples. With the R backend installed this reproduces the manuscript's UCEC phosphoproteome
-counts exactly.
+samples. This reproduces the manuscript's UCEC phosphoproteome counts exactly, with or
+without the R backend.
 
 ## Testing
 

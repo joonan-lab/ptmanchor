@@ -90,6 +90,10 @@ def _limma_squeeze_var(s2, df):
             d0 = 2.0 * float(brentq(_f, lo, hi, xtol=1e-6))
     except Exception:
         d0 = 10.0
+    # limma fitFDist rescales the prior variance once df.prior is known:
+    #   s20 <- exp(emean + digamma(df2/2) - log(df2/2))
+    s0_sq = float(np.exp(np.mean(z) + digamma(d0 / 2.0) - np.log(d0 / 2.0)))
+
     squeezed_s2 = s2.copy()
     squeezed_df = df.copy()
     squeezed_s2[valid] = (d0 * s0_sq + dv * sv) / (d0 + dv)

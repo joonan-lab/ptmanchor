@@ -825,3 +825,43 @@ class TestBidirectionalInference:
                 rng.normal(0, 1, (2, 10)), rng.normal(0, 1, (2, 10)),
                 min_n=5, alternative="negative",
             )
+
+
+class TestEBBackendEquivalence:
+    """The Python EB implementation must match limma::squeezeVar."""
+
+    def _both_backends(self, s2, df):
+        import ptmanchor.modeling as m
+
+        saved = m._R_AVAIL
+        try:
+            m._R_AVAIL = None
+            m._R_PKGS = {}
+            if not m._check_rpy2():
+                pytest.skip("R/limma not available")
+            r = _limma_squeeze_var(s2, df)
+            m._R_AVAIL = False
+            p = _limma_squeeze_var(s2, df)
+        finally:
+            m._R_AVAIL = saved
+        return r, p
+
+    @pytest.mark.parametrize("df_value", [8, 28])
+    def test_constant_df_matches_limma(self, rng, df_value):
+        n = 3000
+        df = np.full(n, float(df_value))
+        true_var = 0.25 * 4 / rng.chisquare(4, n)
+        s2 = true_var * rng.chisquare(df, n) / df
+        r, p = self._both_backends(s2, df)
+        assert r[2] == pytest.approx(p[2], rel=1e-6)
+        assert r[3] == pytest.approx(p[3], rel=1e-6)
+        np.testing.assert_allclose(r[0], p[0], rtol=1e-6)
+
+    def test_varying_df_matches_limma(self, rng):
+        n = 3000
+        df = rng.integers(6, 29, n).astype(float)
+        true_var = 0.25 * 4 / rng.chisquare(4, n)
+        s2 = true_var * rng.chisquare(df, n) / df
+        r, p = self._both_backends(s2, df)
+        assert r[3] == pytest.approx(p[3], rel=1e-6)
+        np.testing.assert_allclose(r[0], p[0], rtol=1e-6)
