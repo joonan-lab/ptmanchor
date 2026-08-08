@@ -63,6 +63,22 @@ ptmanchor \
 
 See [Input Format](#input-format) below for file specifications.
 
+### Five-minute reproducible demo
+
+The repository includes a deterministic paired dataset generator. From the repository root:
+
+```bash
+python examples/generate_demo_data.py
+ptmanchor \
+  --manifest examples/demo_data/manifest.tsv \
+  --protein-file examples/demo_data/protein.tsv \
+  --output-dir examples/demo_results \
+  --alternative two-sided
+```
+
+This exercises protein matching, paired per-site regression, EB and λ shrinkage,
+BH correction, and direction-specific output files without downloading external data.
+
 ### Python API
 
 You can also call ptmanchor functions directly in Python scripts or Jupyter notebooks:
@@ -204,27 +220,22 @@ Supplying `Gene Symbol` enables the third matching tier (see [Protein Matching](
 
 For each modality, ptmanchor creates a directory (e.g., `results/corrected/phosphoproteomics/`) containing:
 - `all_sites.tsv` — full results for every PTM site
-- `true_increase_lm.tsv` — sites classified as true PTM-specific increases
-- `true_increase_subtract.tsv` — sites passing subtraction-based correction
+- `true_increase_lm.tsv` / `true_decrease_lm.tsv` — direction-specific ptmanchor hits
+- `true_hits_lm.tsv` — union of ptmanchor hits in the tested direction(s)
+- `true_increase_subtract.tsv` / `true_decrease_subtract.tsv` — direction-specific subtraction hits
+- `true_hits_subtract.tsv` — union of subtraction hits in the tested direction(s)
 
-Example rows from `all_sites.tsv`:
+With the default `--alternative greater`, decrease files are empty and `true_hits_lm.tsv` is identical to `true_increase_lm.tsv`. With `--alternative two-sided`, increase and decrease results remain separate.
 
-```
-ID              Accession  Gene   lm_intercept  lm_lambda  lm_q_bh   is_true_lm  protein_driven_lm
-AAAS_S495       Q9NRG9     AAAS   0.08          0.91       0.82      False       False
-ABI1_S216       Q8IZP0     ABI1   0.65          0.34       0.001     True        False
-CDK1_T161       P06493     CDK1   0.92          0.12       1.2e-05   True        False
-MKI67_S1031     P46013     MKI67  0.03          1.08       0.91      False       True
-```
-
-Key output columns:
-- `lm_intercept`: PTM-specific effect (beta) after removing protein contribution
-- `lm_lambda`: estimated protein contribution coefficient per site
+Key output columns in `all_sites.tsv`:
+- `lm_intercept_ptm_specific`: PTM-specific effect (β₀) after accounting for protein abundance
+- `lm_lambda_protein_dependence`: estimated protein coupling coefficient (λ) per site
 - `lm_q_bh`: BH-adjusted p-value
-- `is_true_lm`: True if PTM-specific increase is significant
-- `protein_driven_lm`: True if signal was significant before correction but not after
+- `is_true_lm_up`, `is_true_lm_down`: direction-specific ptmanchor classifications
+- `is_true_lm`: union of significant directions tested
+- `protein_driven_lm`: raw hit that is no longer significant after ptmanchor correction
 
-A `modality_summary.tsv` aggregates hit counts across all modalities.
+A `modality_summary.tsv` aggregates hit counts across all modalities, and `run_config.json` records the analysis direction, thresholds, shrinkage settings, and EB backend.
 
 ## Manuscript
 
@@ -235,10 +246,10 @@ same quantification tables are available from the
 annotations were taken from PhosphoSitePlus. See the manuscript for the full analysis
 description.
 
-The version of this repository as submitted for initial review is tagged
-[`v1.0.0`](https://github.com/joonan-lab/ptmanchor/releases/tag/v1.0.0).
 
 ### Example: preparing CPTAC data
+
+Install the pinned CPTAC loader used for the manuscript example with `pip install -e ".[reproduce]"`.
 
 ptmanchor takes any PTM and protein matrix in the format above; CPTAC is simply the source
 used in the manuscript. The `cptac` package returns samples as rows and sites as columns, so
@@ -289,7 +300,7 @@ pytest tests/ -v --cov=ptmanchor
 
 If you use ptmanchor in your research, please cite:
 
-> Jeong et al. (2026). ptmanchor: protein-anchored correction reveals PTM-specific kinase regulation across multi-cohort cancer proteomics. [Under review]
+> Jeong et al. (2026). ptmanchor: per-site protein-anchored correction refines PTM-specific quantification in multi-cohort cancer proteomics. [Under review]
 
 ## Contact
 

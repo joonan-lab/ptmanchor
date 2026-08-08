@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+message: "If you use ptmanchor, please cite the software and accompanying manuscript."
+title: "ptmanchor: protein-anchored correction for PTM proteomics"
+type: software
+version: 1.1.2
+date-released: 2026-08-08
+authors:
+  - family-names: Jeong
+    given-names: Ha-Eun
+  - family-names: Shin
+    given-names: Dong-Min
+  - family-names: Choi
+    given-names: Heesun
+  - family-names: Park
+    given-names: Jongseo
+  - family-names: Park
+    given-names: Hayoon
+  - family-names: An
+    given-names: Joon-Yong
+    email: joonan30@korea.ac.kr
+repository-code: "https://github.com/joonan-lab/ptmanchor"
+license: MIT
+preferred-citation:
+  type: article
+  title: "ptmanchor: per-site protein-anchored correction refines PTM-specific quantification in multi-cohort cancer proteomics"
+  authors:
+    - family-names: Jeong
+      given-names: Ha-Eun
+    - family-names: Shin
+      given-names: Dong-Min
+    - family-names: Choi
+      given-names: Heesun
+    - family-names: Park
+      given-names: Jongseo
+    - family-names: Park
+      given-names: Hayoon
+    - family-names: An
+      given-names: Joon-Yong
+  year: 2026

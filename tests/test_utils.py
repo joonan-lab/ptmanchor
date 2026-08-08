@@ -272,7 +272,7 @@ class TestClassifyHit:
         assert res["hit"].tolist() == (res["up"] | res["down"]).tolist()
 
     def test_threshold_is_inclusive(self):
-        """Manuscript classifies at |beta| >= 0.2, so the boundary itself is a hit."""
+        """The effect-size threshold is inclusive."""
         eff = np.array([0.2, -0.2])
         q = np.array([0.01, 0.01])
         res = classify_hit(eff, q, alpha=0.05, threshold=0.2, alternative="two-sided")

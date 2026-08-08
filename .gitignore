@@ -3,19 +3,21 @@ data/
 results/
 references/
 
+# Demo outputs
+examples/demo_data/
+examples/demo_results/
+
 # Analysis data and results (reproducible via scripts)
 analysis/data/
 analysis/results/
 
-# Manuscript (private, in Dropbox)
+# Local manuscript files
 manuscript/
 scripts/
 
-# Internal planning docs
+# Local planning files
 plans/
 
-# Claude Code workspace
-.claude/
 
 # Virtual environments
 .venv*/

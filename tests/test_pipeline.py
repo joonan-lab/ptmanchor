@@ -84,6 +84,21 @@ class TestRunManifest:
             for col in expected_cols:
                 assert col in df.columns, f"Missing column: {col}"
 
+    def test_ptm_path_can_be_relative_to_manifest(self, mock_args):
+        """A portable manifest may reference a PTM file beside the manifest."""
+        args = copy.deepcopy(mock_args)
+        manifest_path = Path(args.manifest)
+        manifest = pd.read_csv(manifest_path, sep="\t")
+        ptm_source = Path(manifest.loc[0, "ptm_file"])
+        ptm_local = manifest_path.parent / "ptm_relative.tsv"
+        ptm_local.write_bytes(ptm_source.read_bytes())
+        manifest.loc[0, "ptm_file"] = ptm_local.name
+        manifest.to_csv(manifest_path, sep="\t", index=False)
+
+        summary_tsv, _, _ = run_manifest(args)
+        summary = pd.read_csv(summary_tsv, sep="\t")
+        assert summary.iloc[0]["status"] == "ok"
+
 
 class TestUnpairedPipeline:
     """Test unpaired analysis path (no paired samples)."""
@@ -498,7 +513,7 @@ class TestBidirectionalPipeline:
         assert (df["is_true_lm"] == df["is_true_lm_up"]).all()
 
     def test_two_sided_run_can_report_decreases(self, mock_args):
-        """Two-sided mode is what produces the manuscript's PTM-specific decrease sites."""
+        """Two-sided mode produces direction-specific decrease sites."""
         args = copy.deepcopy(mock_args)
         args.alternative = "two-sided"
         args.output_dir = str(Path(mock_args.output_dir).parent / "two_sided")
@@ -506,6 +521,23 @@ class TestBidirectionalPipeline:
         df = self._all_sites(args)
         assert (df["is_true_lm"] == (df["is_true_lm_up"] | df["is_true_lm_down"])).all()
         assert not (df["is_true_lm_up"] & df["is_true_lm_down"]).any()
+
+    def test_two_sided_writes_direction_specific_files(self, mock_args):
+        args = copy.deepcopy(mock_args)
+        args.alternative = "two-sided"
+        args.output_dir = str(Path(mock_args.output_dir).parent / "two_sided_files")
+
+        df = self._all_sites(args)
+        modality_dir = next(Path(args.output_dir).glob("*/all_sites.tsv")).parent
+        up = pd.read_csv(modality_dir / "true_increase_lm.tsv", sep="\t")
+        down = pd.read_csv(modality_dir / "true_decrease_lm.tsv", sep="\t")
+        hits = pd.read_csv(modality_dir / "true_hits_lm.tsv", sep="\t")
+
+        assert len(up) == int(df["is_true_lm_up"].sum())
+        assert len(down) == int(df["is_true_lm_down"].sum())
+        assert len(hits) == int(df["is_true_lm"].sum())
+        assert not up["is_true_lm_down"].any()
+        assert not down["is_true_lm_up"].any()
 
     def test_alternative_recorded_in_summary(self, mock_args):
         args = copy.deepcopy(mock_args)

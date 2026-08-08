@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import fisher_exact
 
+from . import __version__
+
 from .metadata import build_sample_design, encode_covariates
 from .modeling import (
     _check_rpy2,
@@ -596,14 +598,22 @@ def run_modality(
     modality_dir.mkdir(parents=True, exist_ok=True)
     all_path = modality_dir / "all_sites.tsv"
     subtract_path = modality_dir / "true_increase_subtract.tsv"
+    subtract_down_path = modality_dir / "true_decrease_subtract.tsv"
+    subtract_hits_path = modality_dir / "true_hits_subtract.tsv"
     lm_path = modality_dir / "true_increase_lm.tsv"
+    lm_down_path = modality_dir / "true_decrease_lm.tsv"
+    lm_hits_path = modality_dir / "true_hits_lm.tsv"
     detection_path = modality_dir / "true_increase_detection.tsv"
     lm_sample_path = modality_dir / "true_increase_sample_lm.tsv"
     lmm_path = modality_dir / "true_increase_sample_lmm.tsv"
     top_path = modality_dir / f"top{args.top_n}_lm.tsv"
     summary_path = modality_dir / "summary.txt"
 
+    subtract_up_hits = results.loc[results["is_true_subtract_up"]].copy()
+    subtract_down_hits = results.loc[results["is_true_subtract_down"]].copy()
     subtract_hits = results.loc[results["is_true_subtract"]].copy()
+    lm_up_hits = results.loc[results["is_true_lm_up"]].copy()
+    lm_down_hits = results.loc[results["is_true_lm_down"]].copy()
     lm_hits = results.loc[results["is_true_lm"]].copy()
     detection_hits = results.loc[results["is_true_detection"]].copy()
     lm_sample_hits = results.loc[results["is_true_sample_lm"]].copy()
@@ -611,8 +621,12 @@ def run_modality(
     top_hits = lm_hits.head(args.top_n).copy()
 
     results.to_csv(all_path, sep="\t", index=False)
-    subtract_hits.to_csv(subtract_path, sep="\t", index=False)
-    lm_hits.to_csv(lm_path, sep="\t", index=False)
+    subtract_up_hits.to_csv(subtract_path, sep="\t", index=False)
+    subtract_down_hits.to_csv(subtract_down_path, sep="\t", index=False)
+    subtract_hits.to_csv(subtract_hits_path, sep="\t", index=False)
+    lm_up_hits.to_csv(lm_path, sep="\t", index=False)
+    lm_down_hits.to_csv(lm_down_path, sep="\t", index=False)
+    lm_hits.to_csv(lm_hits_path, sep="\t", index=False)
     detection_hits.to_csv(detection_path, sep="\t", index=False)
     lm_sample_hits.to_csv(lm_sample_path, sep="\t", index=False)
     lmm_hits.to_csv(lmm_path, sep="\t", index=False)
@@ -650,10 +664,14 @@ def run_modality(
         f"raw_up_sites: {int(np.sum(raw_up))}",
         f"raw_down_sites: {int(np.sum(raw_down))}",
         f"raw_hit_sites: {int(np.sum(raw_hit))}",
-        f"true_increase_subtract: {int(np.sum(subtract_true))}",
+        f"true_increase_subtract: {int(np.sum(subtract_up))}",
+        f"true_decrease_subtract: {int(np.sum(subtract_down))}",
+        f"true_subtract_hits: {int(np.sum(subtract_true))}",
         f"true_subtract_up: {int(np.sum(subtract_up))}",
         f"true_subtract_down: {int(np.sum(subtract_down))}",
-        f"true_increase_lm: {int(np.sum(lm_true))}",
+        f"true_increase_lm: {int(np.sum(lm_up))}",
+        f"true_decrease_lm: {int(np.sum(lm_down))}",
+        f"true_lm_hits: {int(np.sum(lm_true))}",
         f"true_lm_up: {int(np.sum(lm_up))}",
         f"true_lm_down: {int(np.sum(lm_down))}",
         f"true_increase_sample_lm: {int(np.sum(lm_sample_true))}",
@@ -665,8 +683,12 @@ def run_modality(
         f"subtract_only_true: {int(np.sum(subtract_only))}",
         f"lm_only_true: {int(np.sum(lm_only))}",
         f"all_sites_table: {all_path}",
-        f"true_subtract_table: {subtract_path}",
-        f"true_lm_table: {lm_path}",
+        f"true_subtract_up_table: {subtract_path}",
+        f"true_subtract_down_table: {subtract_down_path}",
+        f"true_subtract_hits_table: {subtract_hits_path}",
+        f"true_lm_up_table: {lm_path}",
+        f"true_lm_down_table: {lm_down_path}",
+        f"true_lm_hits_table: {lm_hits_path}",
         f"true_detection_table: {detection_path}",
         f"true_sample_lm_table: {lm_sample_path}",
         f"true_sample_lmm_table: {lmm_path}",
@@ -704,10 +726,14 @@ def run_modality(
         "raw_up_sites": int(np.sum(raw_up)),
         "raw_down_sites": int(np.sum(raw_down)),
         "raw_hit_sites": int(np.sum(raw_hit)),
-        "true_increase_subtract": int(np.sum(subtract_true)),
+        "true_increase_subtract": int(np.sum(subtract_up)),
+        "true_decrease_subtract": int(np.sum(subtract_down)),
+        "true_subtract_hits": int(np.sum(subtract_true)),
         "true_subtract_up": int(np.sum(subtract_up)),
         "true_subtract_down": int(np.sum(subtract_down)),
-        "true_increase_lm": int(np.sum(lm_true)),
+        "true_increase_lm": int(np.sum(lm_up)),
+        "true_decrease_lm": int(np.sum(lm_down)),
+        "true_lm_hits": int(np.sum(lm_true)),
         "true_lm_up": int(np.sum(lm_up)),
         "true_lm_down": int(np.sum(lm_down)),
         "true_increase_sample_lm": int(np.sum(lm_sample_true)),
@@ -751,6 +777,10 @@ def run_manifest(args) -> tuple[Path, Path, Path]:
         modality = str(row["modality"]).strip()
         enabled = parse_bool(row["enabled"], default=True) if "enabled" in manifest.columns else True
         ptm_file = Path(str(row["ptm_file"]).strip())
+        if not ptm_file.is_absolute() and not ptm_file.exists():
+            manifest_relative = manifest_path.parent / ptm_file
+            if manifest_relative.exists():
+                ptm_file = manifest_relative
         if not enabled:
             summary_rows.append(
                 {
@@ -822,14 +852,19 @@ def run_manifest(args) -> tuple[Path, Path, Path]:
     summary_txt.write_text("\n".join(lines), encoding="utf-8")
 
     run_meta = {
+        "ptmanchor_version": __version__,
         "manifest": str(manifest_path),
         "protein_file": str(protein_file),
         "output_dir": str(output_dir),
         "alternative": str(getattr(args, "alternative", "greater")),
-        # The two EB backends do not agree exactly, so record which one ran.
+        # Record the backend for provenance even though the implementations agree.
         "eb_backend": (
             "disabled" if getattr(args, "no_eb", False)
             else ("limma" if _check_rpy2() else "python")
+        ),
+        "eb_enabled": not bool(getattr(args, "no_eb", False)),
+        "lambda_shrinkage_enabled": not bool(
+            getattr(args, "no_lambda_shrinkage", False)
         ),
         "min_pairs": args.min_pairs,
         "min_tumor": args.min_tumor,
