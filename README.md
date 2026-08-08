@@ -63,7 +63,7 @@ ptmanchor \
 
 See [Input Format](#input-format) below for file specifications.
 
-### Five-minute reproducible demo
+### Quick demo with synthetic data
 
 The repository includes a deterministic paired dataset generator. From the repository root:
 
