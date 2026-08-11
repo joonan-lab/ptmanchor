@@ -374,7 +374,8 @@ def run_modality(
     subtract_true = subtract_hit
     lm_true = lm_hit
 
-    # Protein-driven: significant in raw but no longer after correction.
+    # Operational non-retention after correction. The historical output-column
+    # name is retained for backward compatibility.
     protein_driven_subtract = raw_hit & (~subtract_hit)
     protein_driven_lm = raw_hit & (~lm_hit)
 

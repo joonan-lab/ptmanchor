@@ -2,7 +2,7 @@
 
 **Protein-anchored correction for multi-PTM proteomics cohorts**
 
-In quantitative PTM proteomics, changes in parent-protein abundance confound PTM-site measurements, generating false positives. `ptmanchor` regresses out the protein-level effect per site, separating true PTM-specific regulation from protein-driven artifacts.
+In quantitative PTM proteomics, a PTM-site measurement can reflect both modification-specific regulation and a change in parent-protein abundance. `ptmanchor` estimates the protein-associated contribution per site and reports the PTM-specific signal remaining after adjustment.
 
 ## Prerequisites
 
@@ -104,9 +104,13 @@ intercepts, lambdas, pvals, n_obs = paired_lm_intercept_test(
 3. **Sample-level LM/LMM** (optional): `PTM ~ is_tumor + protein + covariates [+ (1|patient)]` — sample-level regression for unpaired designs or when covariates are needed
 
 Each site is classified as:
-- **True PTM change**: significant after correction (FDR < cutoff, |effect| > threshold)
-- **Protein-driven**: significant before but not after correction
+- **Retained PTM-specific change**: meets the FDR and effect-size thresholds after correction
+- **Not retained after correction**: meets the thresholds before correction but not after correction (reported in the backward-compatible `protein_driven_lm` field)
 - **Null**: not significant in either analysis
+
+The not-retained category is operational: it may reflect attenuation of the corrected
+effect, loss of statistical significance, or both. It does not by itself establish that
+the biological change is dominated by the parent-protein component.
 
 ### Test Direction
 
