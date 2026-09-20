@@ -2,7 +2,11 @@
 
 **Protein-anchored correction for multi-PTM proteomics cohorts**
 
-In quantitative PTM proteomics, a PTM-site measurement can reflect both modification-specific regulation and a change in parent-protein abundance. `ptmanchor` estimates the protein-associated contribution per site and reports the PTM-specific signal remaining after adjustment.
+A change in PTM-site abundance can reflect a PTM-specific change, a change in parent-protein abundance, or both. `ptmanchor` estimates site-specific protein–PTM coupling and separates the estimated protein contribution from the PTM-specific change. Protein adjustment addresses PTM-specific changes and complements, rather than replaces, the unadjusted PTM readout.
+
+Documentation note for v1.1.2: the backend and classification guidance below
+supersedes the older README stored in the release tag. The tagged source code is
+unchanged.
 
 ## Prerequisites
 
@@ -26,18 +30,21 @@ pip install -e ".[test]"
 
 ### Optional: R backend for variance shrinkage
 
-Empirical Bayes variance shrinkage calls `limma::squeezeVar` through rpy2 when R is
-available, and otherwise uses an equivalent implementation in Python. The two paths agree
-to numerical precision, so **no R installation is needed to reproduce the manuscript
-results**; the R path is provided only for users who prefer to run the reference
-implementation directly.
+Empirical Bayes variance moderation uses `limma::squeezeVar` through rpy2 when
+available. A Python moment-matching fallback is used if R/limma is unavailable or
+its call fails. **The two backends are not guaranteed to produce identical results.**
+Use the documented R/limma environment to reproduce the reported benchmark results.
+The package can run without R, but that is not a guarantee of identical manuscript
+statistics or classifications.
 
 ```bash
 pip install -e ".[r]"
 R -e 'if (!requireNamespace("BiocManager", quietly=TRUE)) install.packages("BiocManager"); BiocManager::install("limma")'
 ```
 
-Which path was used is recorded in `run_config.json` for every run.
+`run_config.json` records the configured/available backend. In v1.1.2 it does not
+audit every individual R call; an R-call failure can trigger the Python fallback.
+When exact reproduction is required, verify successful R/limma execution.
 
 ## Quick Start
 
@@ -100,17 +107,21 @@ intercepts, lambdas, pvals, n_obs = paired_lm_intercept_test(
 `ptmanchor` provides 3 tiers of protein-anchored correction:
 
 1. **Subtraction**: `adjusted_delta = PTM_delta - protein_delta` — simple baseline removal assuming fixed λ = 1
-2. **Paired linear model (default)**: `PTM_delta ~ intercept + lambda * protein_delta` — estimates a per-site protein contribution coefficient (λ) and isolates the PTM-specific intercept
+2. **Paired linear model (default)**: `PTM_delta ~ intercept + lambda * protein_delta` — estimates the site-specific protein–PTM coupling coefficient (λ) and PTM-specific change (β₀)
 3. **Sample-level LM/LMM** (optional): `PTM ~ is_tumor + protein + covariates [+ (1|patient)]` — sample-level regression for unpaired designs or when covariates are needed
 
-Each site is classified as:
-- **Retained PTM-specific change**: meets the FDR and effect-size thresholds after correction
-- **Not retained after correction**: meets the thresholds before correction but not after correction (reported in the backward-compatible `protein_driven_lm` field)
-- **Null**: not significant in either analysis
+With the default increase-oriented test, the manuscript uses these terms:
 
-The not-retained category is operational: it may reflect attenuation of the corrected
-effect, loss of statistical significance, or both. It does not by itself establish that
-the biological change is dominated by the parent-protein component.
+- **PTM-specific increase**: corrected β₀ ≥ 0.2 and BH-adjusted q ≤ 0.05 at the default thresholds.
+- **Not retained after correction**: a raw-up site with an estimable corrected result that does not meet the PTM-specific increase criteria.
+
+An estimable corrected result requires finite β₀ and q and at least the requested
+number of paired observations (eight by default). Sites without an estimable result
+are excluded from manuscript retention-rate denominators, not interpreted as
+protein-driven. Not meeting the increase criteria may reflect a smaller estimated
+effect, loss of statistical significance, or both; it does not establish that the
+biological change is driven by protein abundance. The legacy `protein_driven_lm`
+field must be combined with this testability filter for manuscript-style summaries.
 
 ### Test Direction
 
@@ -196,7 +207,7 @@ Other:
 
 ### PTM / Protein TSV
 
-ptmanchor does not perform any internal normalization or log transformation — values are used as-is in the regression model. PTM and protein matrices must share the **same scale and normalization**. The tool has been validated on TMT-based quantification data from CPTAC.
+ptmanchor does not perform any internal normalization or log transformation — values are used as-is in the regression model. PTM and protein matrices must share the **same scale and normalization**. The tool has been evaluated on TMT-based quantification data from CPTAC.
 
 **We recommend log2-transformed values** (e.g., log2 ratio or log2 intensity), since the default effect-size threshold (`--min-corrected-delta 0.2`) is calibrated on the log2 scale. If using a different scale, adjust this threshold accordingly.
 
@@ -232,14 +243,14 @@ For each modality, ptmanchor creates a directory (e.g., `results/corrected/phosp
 With the default `--alternative greater`, decrease files are empty and `true_hits_lm.tsv` is identical to `true_increase_lm.tsv`. With `--alternative two-sided`, increase and decrease results remain separate.
 
 Key output columns in `all_sites.tsv`:
-- `lm_intercept_ptm_specific`: PTM-specific effect (β₀) after accounting for protein abundance
-- `lm_lambda_protein_dependence`: estimated protein coupling coefficient (λ) per site
+- `lm_intercept_ptm_specific`: PTM-specific change (β₀) after accounting for protein abundance
+- `lm_lambda_protein_dependence`: site-specific protein–PTM coupling coefficient (λ)
 - `lm_q_bh`: BH-adjusted p-value
 - `is_true_lm_up`, `is_true_lm_down`: direction-specific ptmanchor classifications
 - `is_true_lm`: union of significant directions tested
-- `protein_driven_lm`: raw hit that is no longer significant after ptmanchor correction
+- `protein_driven_lm`: legacy raw-hit/not-corrected-hit flag; it is not proof of protein-driven regulation and must be filtered for an estimable corrected result before calculating retention rates
 
-A `modality_summary.tsv` aggregates hit counts across all modalities, and `run_config.json` records the analysis direction, thresholds, shrinkage settings, and EB backend.
+A `modality_summary.tsv` aggregates hit counts across all modalities, and `run_config.json` records the analysis direction, thresholds, shrinkage settings, and configured EB backend (see the R-backend caveat above).
 
 ## Manuscript
 
@@ -273,7 +284,7 @@ def export(df, is_ptm):
     out.insert(0, "Gene Symbol", meta["Name"].values)
     if is_ptm:
         out.insert(0, "UniProtAccession", meta["Database_ID"].values)
-        out.insert(0, "ID", (meta["Name"].astype(str) + "_" + meta["Site"].astype(str)).values)
+        out.insert(0, "ID", meta[["Name", "Site", "Peptide", "Database_ID"]].astype(str).agg("_".join, axis=1).values)
     else:
         out.insert(0, "ID", meta["Database_ID"].values)
     return out
@@ -291,8 +302,9 @@ ptmanchor --manifest manifest.tsv --protein-file proteome.tsv \
 
 Keep every tumor and normal sample rather than pre-filtering to matched pairs: the paired
 model selects its own pairs, while the unpaired and detection fallbacks use the remaining
-samples. This reproduces the manuscript's UCEC phosphoproteome counts exactly, with or
-without the R backend.
+samples. This example demonstrates CPTAC input preparation. Exact manuscript reproduction
+also requires the same source tables, R/limma backend, analysis settings, and
+estimability filters; the example does not guarantee identical counts across backends.
 
 ## Testing
 
