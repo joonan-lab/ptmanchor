@@ -55,7 +55,7 @@ Prepare the following files:
 - **Protein file** (`global_proteome.tsv`): global proteome quantification used as the protein-level reference
 - **Manifest TSV** (`modalities.tsv`): a simple index that lists which PTM files to process (see [Input Format](#input-format))
 
-ptmanchor reads the manifest to find PTM file paths, so you can run multiple modalities (phospho, acetyl, ubiquitin, etc.) in a single command — just add rows to the manifest.
+ptmanchor reads the manifest to find PTM file paths, so you can run multiple modalities (such as phosphoproteomics and acetylproteomics) in a single command — just add rows to the manifest.
 
 Then run:
 
@@ -88,15 +88,29 @@ BH correction, and direction-specific output files without downloading external 
 
 ### Python API
 
-You can also call ptmanchor functions directly in Python scripts or Jupyter notebooks:
+You can also call ptmanchor functions directly in Python scripts or Jupyter notebooks. After generating the synthetic demo data above:
 
 ```python
-from ptmanchor import run_manifest, paired_lm_intercept_test
+from ptmanchor import run_manifest
 
-# Run full pipeline from a namespace/args object
+# Build the same complete argument namespace used by the CLI.
+from ptmanchor.cli import build_parser
+
+args = build_parser().parse_args([
+    "--manifest", "examples/demo_data/manifest.tsv",
+    "--protein-file", "examples/demo_data/protein.tsv",
+    "--output-dir", "examples/demo_results_api",
+    "--alternative", "two-sided",
+])
 summary_tsv, summary_txt, config_json = run_manifest(args)
+```
 
-# Or use modeling functions directly
+For lower-level modeling, prepare `raw_delta` and `protein_delta` as NumPy arrays
+of shape `(PTM records, paired samples)`, containing tumor-minus-normal log2
+differences, then call:
+
+```python
+from ptmanchor import paired_lm_intercept_test
 intercepts, lambdas, pvals, n_obs = paired_lm_intercept_test(
     raw_delta, protein_delta, min_n=8
 )
@@ -109,6 +123,16 @@ intercepts, lambdas, pvals, n_obs = paired_lm_intercept_test(
 1. **Subtraction**: `adjusted_delta = PTM_delta - protein_delta` — simple baseline removal assuming fixed λ = 1
 2. **Paired linear model (default)**: `PTM_delta ~ intercept + lambda * protein_delta` — estimates the site-specific protein–PTM coupling coefficient (λ) and PTM-specific change (β₀)
 3. **Sample-level LM/LMM** (optional): `PTM ~ is_tumor + protein + covariates [+ (1|patient)]` — sample-level regression for unpaired designs or when covariates are needed
+
+The paired model fits tumor–normal differences on a common log2 scale. Its intercept
+β₀ estimates the PTM change at zero protein change. By default, site-specific λ
+estimates are shrunk toward a precision-weighted mean within each cohort–modality
+analysis. The intercept and residual variance are then recomputed, followed by
+empirical Bayes variance moderation. BH correction is applied separately for each
+method within each modality and cohort.
+
+The reported CPTAC analyses used paired data from seven phosphoproteomics cohorts
+and three acetylproteomics cohorts (LUAD, LSCC, and UCEC).
 
 With the default increase-oriented test, the manuscript uses these terms:
 
@@ -131,20 +155,27 @@ also populates the corresponding down-regulated classifications:
 
 ```bash
 ptmanchor --manifest data/modalities.tsv --protein-file data/global_proteome.tsv \
-  --alternative two-sided
+  --output-dir results/corrected --alternative two-sided
 ```
 
 ### Protein Matching
 
 PTM sites are matched to parent proteins via a 3-level cascade:
-1. Exact UniProt accession
-2. Canonical accession (isoform-stripped)
-3. Gene symbol fallback
+1. Exact UniProt accession or Ensembl protein identifier (`ENSP...`), including isoform or version suffixes
+2. Canonical identifier after removing UniProt isoform or Ensembl version suffixes
+3. Primary gene symbol fallback
+
+For each matching tier, duplicate protein rows are aggregated by their per-sample
+median. PTM records retain the peptide-level resolution of the input; a record can
+represent one modified residue or a combination of residues.
 
 ### Fallback Strategies
 
-- **Paired-to-unpaired fallback**: when too few paired samples exist
-- **Detection-rate fallback**: Fisher exact test on presence/absence for sparse data
+- **Paired-to-unpaired fallback** (opt-in): switches the entire modality when too few sites meet the paired-observation threshold. It uses Welch tests for raw and subtraction results and sample-level regression for ptmanchor; it is not a per-site replacement for missing pairs.
+- **Detection-rate fallback** (opt-in): Fisher exact tests on presence/absence for sparse data, with a protein-adjusted detection-frequency difference as the effect measure.
+
+If no tumor–normal pairs exist, the primary analysis uses the unpaired model.
+The reported main CPTAC results all used paired analyses, without these fallbacks.
 
 ## CLI Reference
 
@@ -152,11 +183,11 @@ PTM sites are matched to parent proteins via a 3-level cascade:
 ptmanchor [OPTIONS]
 
 Required inputs:
-  --manifest FILE          TSV with columns: modality, ptm_file, enabled
-  --protein-file FILE      Global proteome TSV (log2 recommended)
+  --manifest FILE          TSV with modality, ptm_file; enabled is optional
+  --protein-file FILE      Global proteome TSV on the same log2 scale as PTM data
 
 Output:
-  --output-dir DIR         Output directory (default: results/multimodal_ptm_correction)
+  --output-dir DIR         Output directory (required; no default)
 
 Thresholds:
   --min-pairs INT          Minimum paired observations per site (default: 8)
@@ -186,11 +217,17 @@ Advanced models:
 Fallbacks:
   --enable-paired-to-unpaired-fallback
   --min-paired-testable-sites INT
+  --fallback-min-tumor INT
+  --fallback-min-normal INT
   --force-unpaired-if-paired
   --enable-detection-fallback
   --force-detection-fallback
   --min-detection-delta FLOAT
   --min-dual-group-sites-detection INT
+
+Shrinkage (enabled by default):
+  --no-eb                 Disable empirical Bayes variance moderation
+  --no-lambda-shrinkage    Disable paired-model lambda shrinkage
 
 Other:
   --version                Show version and exit
@@ -205,11 +242,15 @@ Other:
 | phospho | data/phospho_ratio.tsv | true |
 | acetyl | data/acetyl_ratio.tsv | true |
 
+`enabled` is optional and defaults to true. Relative PTM file paths are resolved
+from the working directory first, then from the manifest directory if not found.
+Run the examples from the repository root.
+
 ### PTM / Protein TSV
 
-ptmanchor does not perform any internal normalization or log transformation — values are used as-is in the regression model. PTM and protein matrices must share the **same scale and normalization**. The tool has been evaluated on TMT-based quantification data from CPTAC.
+ptmanchor does not perform any internal normalization or log transformation — values are used as-is in the regression model. Supply preprocessed PTM and protein matrices on a **common log2 scale with consistent normalization**. The reported applications used TMT-based CPTAC phosphoproteomics and acetylproteomics data.
 
-**We recommend log2-transformed values** (e.g., log2 ratio or log2 intensity), since the default effect-size threshold (`--min-corrected-delta 0.2`) is calibrated on the log2 scale. If using a different scale, adjust this threshold accordingly.
+**Use log2-transformed values** (e.g., log2 ratios or log2 intensities). Both the paired difference model and the default effect-size threshold (`--min-corrected-delta 0.2`) are described on this scale. The package does not check or convert the input scale.
 
 Tab-separated with metadata columns followed by sample columns. Tumor samples end with `-T`, normal samples end with `-N`.
 
@@ -229,7 +270,7 @@ Q9NRG9          AAAS         0.11        -0.04       0.25        0.08
 Q8IZP0          ABI1         0.40        0.19        0.22        -0.02
 ```
 
-Supplying `Gene Symbol` enables the third matching tier (see [Protein Matching](#protein-matching)); without it, sites are matched by accession only. Both PTM and protein values must be on the same scale (log2 recommended).
+Supplying `Gene Symbol` enables the third matching tier (see [Protein Matching](#protein-matching)); without it, sites are matched by accession only. Keep the column name `UniProtAccession` even when supplying Ensembl protein identifiers. Both PTM and protein values must use the same log2 scale.
 
 ## Output Format
 
@@ -250,19 +291,13 @@ Key output columns in `all_sites.tsv`:
 - `is_true_lm`: union of significant directions tested
 - `protein_driven_lm`: legacy raw-hit/not-corrected-hit flag; it is not proof of protein-driven regulation and must be filtered for an estimable corrected result before calculating retention rates
 
-A `modality_summary.tsv` aggregates hit counts across all modalities, and `run_config.json` records the analysis direction, thresholds, shrinkage settings, and configured EB backend (see the R-backend caveat above).
+Check `modality_summary.tsv` for each modality’s status, analysis mode, and failure or skip reason; a completed CLI invocation alone does not imply every modality succeeded. It also aggregates hit counts across all modalities, and `run_config.json` records the analysis direction, thresholds, shrinkage settings, and configured EB backend (see the R-backend caveat above).
 
-## Manuscript
+## Example: preparing CPTAC data
 
-In the accompanying manuscript, ptmanchor was applied to paired tumor-normal CPTAC cohorts
-obtained through the [`cptac`](https://pypi.org/project/cptac/) Python package (v1.5.14); the
-same quantification tables are available from the
-[Proteomic Data Commons](https://pdc.cancer.gov/pdc/cptac-pancancer). Kinase-substrate
-annotations were taken from PhosphoSitePlus. See the manuscript for the full analysis
-description.
-
-
-### Example: preparing CPTAC data
+The reported analyses used processed quantification tables from the `umich` source
+in the `cptac` Python package (v1.5.14). These data are also available through the
+[Proteomic Data Commons](https://pdc.cancer.gov/pdc/cptac-pancancer).
 
 Install the pinned CPTAC loader used for the manuscript example with `pip install -e ".[reproduce]"`.
 
@@ -301,8 +336,8 @@ ptmanchor --manifest manifest.tsv --protein-file proteome.tsv \
 ```
 
 Keep every tumor and normal sample rather than pre-filtering to matched pairs: the paired
-model selects its own pairs, while the unpaired and detection fallbacks use the remaining
-samples. This example demonstrates CPTAC input preparation. Exact manuscript reproduction
+model selects its own pairs, while unpaired and detection analyses, when selected, use the available
+tumor and normal samples. This example demonstrates CPTAC input preparation. Exact manuscript reproduction
 also requires the same source tables, R/limma backend, analysis settings, and
 estimability filters; the example does not guarantee identical counts across backends.
 
